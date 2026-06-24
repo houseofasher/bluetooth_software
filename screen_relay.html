@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>#houseofasher · Screen Relay</title>
+  <style>
+    :root { --bg:#0a0e14; --cyan:#00e5ff; --green:#39ff14; --text:#c8d6e5; --muted:#6b7c93; --border:#1e2a3a; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:Segoe UI,system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:1rem; }
+    h1 { font-size:1rem; color:var(--cyan); letter-spacing:.08em; margin:0 0 .5rem; }
+    .meta { font-size:.85rem; color:var(--muted); margin-bottom:1rem; }
+    button { background:#1a2433; color:var(--text); border:1px solid var(--border); padding:.65rem 1rem; border-radius:8px; font-size:1rem; cursor:pointer; width:100%; margin:.35rem 0; }
+    button.primary { border-color:var(--cyan); color:var(--cyan); }
+    button.danger { border-color:#ff3355; color:#ff3355; }
+    #preview { width:100%; max-height:40vh; background:#000; border-radius:8px; margin:.75rem 0; display:none; }
+    #status { font-size:.8rem; padding:.5rem; border-radius:6px; background:#0d1219; border:1px solid var(--border); margin-top:.5rem; }
+    #status.live { border-color:var(--green); color:var(--green); }
+    code { color:var(--cyan); font-size:.85em; word-break:break-all; }
+  </style>
+</head>
+<body>
+  <h1>#houseofasher SCREEN RELAY</h1>
+  <p class="meta">Consent required — your browser will ask which screen or window to share. Frames post to this PC only.</p>
+  <p class="meta">Session: <code id="sessionLabel">—</code></p>
+
+  <button id="startBtn" class="primary" type="button">START SHARE</button>
+  <button id="stopBtn" class="danger" type="button" disabled>STOP SHARE</button>
+
+  <video id="preview" autoplay playsinline muted></video>
+  <div id="status">Idle — tap START SHARE and pick your screen or window.</div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const sessionId = params.get("session") || "";
+    const deviceAddress = params.get("address") || "";
+    const label = params.get("label") || "";
+
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const preview = document.getElementById("preview");
+    const statusEl = document.getElementById("status");
+    const sessionLabel = document.getElementById("sessionLabel");
+
+    let stream = null;
+    let timer = null;
+    let canvas = document.createElement("canvas");
+    let ctx = canvas.getContext("2d");
+    let frameCount = 0;
+
+    sessionLabel.textContent = sessionId || "(missing session — open from HUD QR)";
+
+    if (!sessionId) {
+      statusEl.textContent = "No session in URL. Open from tactical HUD → SCREEN RELAY → scan QR.";
+      startBtn.disabled = true;
+    }
+
+    function setStatus(msg, live) {
+      statusEl.textContent = msg;
+      statusEl.className = live ? "live" : "";
+    }
+
+    async function postFrame(blob) {
+      const buf = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const frameJpeg = btoa(binary);
+      const res = await fetch("/api/screen/frame", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          deviceAddress: deviceAddress || undefined,
+          label: label || undefined,
+          frameJpeg,
+          width: canvas.width,
+          height: canvas.height,
+          ts: Date.now(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "upload failed");
+      frameCount = data.frameCount || frameCount + 1;
+      setStatus(`LIVE · ${frameCount} frame(s) → monitor HUD`, true);
+    }
+
+    function captureLoop() {
+      if (!stream || !preview.videoWidth) return;
+      canvas.width = preview.videoWidth;
+      canvas.height = preview.videoHeight;
+      ctx.drawImage(preview, 0, 0);
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+        try { await postFrame(blob); } catch (e) { setStatus("Upload error: " + e.message); }
+      }, "image/jpeg", 0.72);
+    }
+
+    async function startShare() {
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        setStatus("Screen share not supported in this browser. Try Chrome on Android/desktop.");
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 8 },
+          audio: false,
+        });
+        preview.srcObject = stream;
+        preview.style.display = "block";
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        setStatus("Sharing — posting frames to HUD…", true);
+        stream.getVideoTracks()[0].onended = () => stopShare();
+        timer = setInterval(captureLoop, 200);
+        captureLoop();
+      } catch (e) {
+        setStatus("Share cancelled or denied: " + (e.message || e));
+      }
+    }
+
+    function stopShare() {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+        stream = null;
+      }
+      preview.srcObject = null;
+      preview.style.display = "none";
+      startBtn.disabled = !sessionId;
+      stopBtn.disabled = true;
+      setStatus("Stopped.");
+    }
+
+    startBtn.addEventListener("click", startShare);
+    stopBtn.addEventListener("click", stopShare);
+  </script>
+</body>
+</html>

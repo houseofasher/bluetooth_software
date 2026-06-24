@@ -155,6 +155,14 @@
     .flaw-type.technical { background: #1a1a20; color: var(--muted); }
     .flaw-type.operational { background: #0d2818; color: var(--green); }
     .theory-code { color: var(--cyan); font-size: 0.68rem; display: block; margin-top: 0.15rem; }
+    #relayViewerWrap { margin-top: 0.75rem; display: none; }
+    #relayViewer {
+      width: 100%; max-height: 420px; background: #000; border-radius: 8px;
+      border: 1px solid var(--border); object-fit: contain;
+    }
+    #relayQrWrap { margin-top: 0.5rem; text-align: center; }
+    #relayQr { width: 180px; height: 180px; border-radius: 8px; background: #fff; padding: 6px; }
+    #relaySessionMeta { font-size: 0.72rem; color: var(--muted); margin-top: 0.35rem; word-break: break-all; }
     .theory-chain { font-size: 0.7rem; color: var(--muted); margin: 0.25rem 0; padding: 0.35rem; background: #080c12; border-radius: 4px; }
     #theoryFilter { width: 100%; margin-bottom: 0.5rem; }
   </style>
@@ -212,9 +220,16 @@
       </div>
 
       <div class="panel">
-        <h2>Screen relay theories</h2>
-        <div id="screenRelayPanel" class="meta">BLE finds devices — Wi‑Fi/USB/AirPlay/scrcpy show screens (consent required).</div>
+        <h2>Screen relay · live monitor</h2>
+        <div id="screenRelayPanel" class="meta">BLE finds devices — share screen via QR + browser consent.</div>
         <div id="screenRelaySteps" class="meta" style="margin-top:0.5rem;"></div>
+        <div id="relayViewerWrap">
+          <img id="relayViewer" alt="Live screen relay feed" />
+          <div id="relayQrWrap">
+            <img id="relayQr" alt="Relay session QR" />
+            <div id="relaySessionMeta"></div>
+          </div>
+        </div>
       </div>
 
       <div class="panel">
@@ -301,6 +316,12 @@
     const sciFiPanel = document.getElementById("sciFiPanel");
     const screenRelayPanel = document.getElementById("screenRelayPanel");
     const screenRelaySteps = document.getElementById("screenRelaySteps");
+    const relayViewerWrap = document.getElementById("relayViewerWrap");
+    const relayViewer = document.getElementById("relayViewer");
+    const relayQr = document.getElementById("relayQr");
+    const relaySessionMeta = document.getElementById("relaySessionMeta");
+    let relayPollTimer = null;
+    let activeRelaySession = null;
     const threatBoard = document.getElementById("threatBoard");
     const replaySlider = document.getElementById("replaySlider");
     const replayPanel = document.getElementById("replayPanel");
@@ -329,9 +350,43 @@
     }
 
     function renderScreenRelayForDevice(d) {
-      if (!d || d.exfilTier !== "LOCKED") return "";
-      return `<div class="intel-block"><h4>Screen relay (GATT cannot show pixels)</h4>
-        <div class="intel-row">Use <strong>SCREEN RELAY</strong> button or pair + scrcpy/AirPlay paths below.</div></div>`;
+      if (!d) return "";
+      return `<div class="intel-block"><h4>Screen relay</h4>
+        <div class="intel-row">BLE cannot show pixels — tap <strong>SCREEN RELAY</strong> for QR + live monitor feed.</div></div>`;
+    }
+
+    async function startRelaySession(address, displayName) {
+      const res = await fetch("/api/screen/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceAddress: address, label: displayName || address }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || "Session failed");
+        return;
+      }
+      activeRelaySession = data.session?.sessionId;
+      const relayPage = data.urls?.relayPage || "";
+      relayViewerWrap.style.display = "block";
+      relayQr.src = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data="
+        + encodeURIComponent(relayPage);
+      relaySessionMeta.innerHTML =
+        `<strong>Session</strong> <code>${escapeHtml(activeRelaySession)}</code><br>` +
+        `<a href="${escapeHtml(relayPage)}" target="_blank" rel="noopener" style="color:var(--cyan)">${escapeHtml(relayPage)}</a><br>` +
+        `<span class="meta">${escapeHtml(data.phoneNote || "")}</span>`;
+      screenRelayPanel.innerHTML =
+        `<strong>Live relay armed</strong> — scan QR on phone or open link → START SHARE<br>` +
+        `<span class="meta">Device: ${escapeHtml(displayName || address)}</span>`;
+      if (relayPollTimer) clearInterval(relayPollTimer);
+      relayPollTimer = setInterval(() => {
+        if (!activeRelaySession) return;
+        relayViewer.src = "/api/screen/frame/latest?session="
+          + encodeURIComponent(activeRelaySession) + "&t=" + Date.now();
+      }, 300);
+      relayViewer.onerror = () => { /* waiting for first frame */ };
+      await loadScreenRelay(address);
+      showToast("Scan QR on device → START SHARE");
     }
 
     function renderScreenRelayPanel(relay) {
@@ -826,9 +881,7 @@
         const fp = d.fingerprint ? `<span class="meta">Signature: <code>${escapeHtml(d.fingerprint)}</code></span>` : "";
         const watchBtn = `<button type="button" class="watchBtn" data-id="${escapeHtml(d.id)}">${d.onWatchlist ? "★ LOCKED" : "☆ LOCK"}</button>`;
         const pullBtn = `<button type="button" class="pullBtn" data-id="${escapeHtml(d.id)}">PULL GATT</button>`;
-        const relayBtn = d.exfilTier === "LOCKED"
-          ? `<button type="button" class="relayBtn" data-id="${escapeHtml(d.id)}">SCREEN RELAY</button>`
-          : "";
+        const relayBtn = `<button type="button" class="relayBtn" data-id="${escapeHtml(d.id)}" data-name="${escapeHtml(d.displayName || d.name || "")}">SCREEN RELAY</button>`;
         const dossierId = "dossier-" + escapeHtml(d.id).replace(/:/g, "");
         const intelId = "intel-" + escapeHtml(d.id).replace(/:/g, "");
         const teamClass = !redBlueToggle.checked ? "" :
@@ -879,9 +932,8 @@
       document.querySelectorAll(".relayBtn").forEach((btn) => {
         btn.addEventListener("click", async (e) => {
           e.stopPropagation();
-          await loadScreenRelay(btn.dataset.id);
-          showToast("Screen relay theories loaded — consent-based paths only");
-          screenRelayPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          await startRelaySession(btn.dataset.id, btn.dataset.name);
+          screenRelayPanel.parentElement.scrollIntoView({ behavior: "smooth", block: "start" });
         });
       });
       document.querySelectorAll(".pullBtn").forEach((btn) => {

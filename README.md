@@ -264,7 +264,18 @@ Mission brief (`GET /api/brief`) includes a **Security & ethics** section with l
 | **QR handoff** | Not automatic from scan | Phone scans QR on HUD → starts relay session |
 
 `GET /api/screen/relay?address=` — platform guess + recommended path + operator steps.  
-HUD: **SCREEN RELAY** button on `GATT LOCKED` contacts.
+`POST /api/screen/session` — create relay session + QR URL.  
+`POST /api/screen/frame` — ingest JPEG from `/relay` sender page.  
+`GET /api/screen/frame/latest?session=` — live feed for HUD monitor.
+
+**Phone on Wi‑Fi:** restart server with LAN bind:
+```powershell
+$env:BLE_BIND_ALL="1"
+python ble-scan-server.py
+```
+Then HUD → **SCREEN RELAY** on a contact → scan QR → **START SHARE** on phone.
+
+HUD: **SCREEN RELAY** button → QR + live viewer on your monitor.
 
 ### Core tactical theories
 
@@ -359,6 +370,11 @@ Background pull: every 45s + on **SYNC HOPS**. Manual: **PULL GATT** per device 
 | `GET` | `/api/location` | Scanner GPS snapshot |
 | `POST` | `/api/location` | Set scanner coords (browser geolocation) |
 | `POST` | `/api/pull` | Manual GATT pull `{ "address": "..." }` |
+| `GET` | `/relay` | Consent-based screen share sender (getDisplayMedia) |
+| `POST` | `/api/screen/session` | Create relay session `{ "deviceAddress", "label" }` |
+| `POST` | `/api/screen/frame` | Ingest JPEG frame `{ "sessionId", "frameJpeg" }` |
+| `GET` | `/api/screen/frame/latest?session=` | Latest JPEG for HUD live viewer |
+| `GET` | `/api/screen/sessions` | Active relay sessions |
 | `GET` | `/api/screen/relay?address=` | Screen relay theories + consent-based mirror path |
 | `GET` | `/api/events/stream` | SSE war room event stream |
 | `POST` | `/api/scenario` | Set mission preset `{ "scenario": "perimeter" }` |
@@ -429,6 +445,8 @@ python hop_reporter.py --node-id pixel-hop --label "Pixel 9" \
 bluetooth-scanning/
 ├── ble-scan-server.py      # HTTP server + persistent scan + auto GATT pull
 ├── tactical_hud.html       # #houseofasher tactical HUD (Leaflet map + intel panels)
+├── ble_frame_store.py      # JPEG frame ingest + relay sessions
+├── screen_relay.html       # Sender page — START SHARE → POST frames
 ├── ble_screen_relay.py     # Screen mirror theories (scrcpy, AirPlay, WebRTC, HDMI…)
 ├── ble_theory.py           # Unified 101-chain narrative→flaw→fix→code corpus
 ├── ble_tactical.py         # Chrono, fingerprints, trails, scenarios, exfil

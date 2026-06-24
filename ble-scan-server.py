@@ -4,14 +4,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
@@ -38,8 +40,10 @@ from ble_theory import (
     theory_snapshot,
 )
 from ble_screen_relay import recommend_relay_path, screen_relay_snapshot
+from ble_frame_store import FRAME_STORE, lan_ip, relay_urls
 
 PORT = 8765
+BIND_ALL = os.environ.get("BLE_BIND_ALL", "").strip().lower() in ("1", "true", "yes")
 DISCOVER_ON_STOP_SEC = 3.0
 HOP_INGEST_INTERVAL = 5.0  # push live devices into domino hop graph while scanning
 AUTO_PULL_INTERVAL = 45.0  # background GATT exfil attempt for strongest unpulled device
@@ -500,6 +504,8 @@ def ensure_scan_thread() -> bool:
 
 _HTML_PATH = Path(__file__).with_name("tactical_hud.html")
 HTML = _HTML_PATH.read_text(encoding="utf-8") if _HTML_PATH.exists() else "<h1>tactical_hud.html missing</h1>"
+_RELAY_HTML_PATH = Path(__file__).with_name("screen_relay.html")
+RELAY_HTML = _RELAY_HTML_PATH.read_text(encoding="utf-8") if _RELAY_HTML_PATH.exists() else "<h1>screen_relay.html missing</h1>"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -531,6 +537,37 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        if path in ("/relay", "/relay.html"):
+            body = RELAY_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/api/screen/sessions":
+            self._send_json(200, FRAME_STORE.snapshot())
+            return
+
+        if path == "/api/screen/frame/latest":
+            qs = parse_qs(urlparse(self.path).query)
+            session_id = (qs.get("session") or [""])[0]
+            if not session_id:
+                self._send_json(400, {"error": "session query param required"})
+                return
+            jpeg, session = FRAME_STORE.latest_jpeg(session_id)
+            if not jpeg:
+                self._send_json(404, {"error": "no frame yet", "session": session.to_dict() if session else None})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Content-Length", str(len(jpeg)))
+            self.end_headers()
+            self.wfile.write(jpeg)
             return
 
         if path == "/api/health":
@@ -577,7 +614,11 @@ class Handler(BaseHTTPRequestHandler):
                     (d for d in snap["devices"] if format_mac(d.get("id", "")) == format_mac(address)),
                     None,
                 )
-            self._send_json(200, screen_relay_snapshot(device))
+            payload = screen_relay_snapshot(device)
+            payload["bindAll"] = BIND_ALL
+            payload["lanIp"] = lan_ip()
+            payload["frameStore"] = FRAME_STORE.snapshot()
+            self._send_json(200, payload)
             return
 
         if path == "/api/brief":
@@ -678,6 +719,63 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+
+        if path == "/api/screen/frame":
+            payload = self._read_json()
+            session_id = str(payload.get("sessionId") or "").strip()
+            frame_b64 = payload.get("frameJpeg") or payload.get("frame")
+            if not session_id or not frame_b64:
+                self._send_json(400, {"error": "sessionId and frameJpeg required"})
+                return
+            try:
+                jpeg = base64.b64decode(frame_b64, validate=True)
+            except Exception:
+                self._send_json(400, {"error": "invalid base64 frame"})
+                return
+            addr = payload.get("deviceAddress")
+            result = FRAME_STORE.ingest_frame(
+                session_id,
+                jpeg,
+                width=payload.get("width"),
+                height=payload.get("height"),
+                device_address=format_mac(str(addr)) if addr else None,
+            )
+            if result.get("ok"):
+                label = payload.get("label") or session_id
+                TACTICAL.log(
+                    "relay",
+                    f"SCREEN FRAME · {label} · #{result.get('frameCount')}",
+                    {"sessionId": session_id, "mac": addr},
+                )
+            code = 200 if result.get("ok") else 404
+            self._send_json(code, result)
+            return
+
+        if path == "/api/screen/session":
+            payload = self._read_json()
+            addr = payload.get("deviceAddress")
+            label = payload.get("label") or "Screen relay"
+            session = FRAME_STORE.create_session(
+                device_address=format_mac(str(addr)) if addr else None,
+                label=str(label),
+            )
+            urls = relay_urls(session.session_id, PORT, BIND_ALL)
+            relay_page = urls["relayPage"]
+            if addr:
+                relay_page += f"&address={quote(format_mac(str(addr)))}&label={quote(str(label))}"
+            self._send_json(200, {
+                "ok": True,
+                "session": session.to_dict(),
+                "urls": {**urls, "relayPage": relay_page},
+                "bindAll": BIND_ALL,
+                "lanIp": lan_ip(),
+                "phoneNote": (
+                    "Phone on Wi‑Fi can open relay URL when server started with BLE_BIND_ALL=1"
+                    if not BIND_ALL
+                    else "Open relay URL on phone — same Wi‑Fi as this PC"
+                ),
+            })
+            return
 
         if path == "/api/hop/report":
             payload = self._read_json()
@@ -790,8 +888,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    bind_host = "0.0.0.0" if BIND_ALL else "127.0.0.1"
+    server = ThreadingHTTPServer((bind_host, PORT), Handler)
     print(f"#houseofasher tactical BLE HUD: http://127.0.0.1:{PORT}/")
+    print(f"Screen relay sender: http://127.0.0.1:{PORT}/relay")
+    if BIND_ALL:
+        print(f"LAN relay (phone): http://{lan_ip()}:{PORT}/relay  [BLE_BIND_ALL=1]")
+    else:
+        print("Phone relay: set BLE_BIND_ALL=1 and restart, then use LAN IP in QR")
     print("CONTINUOUS SWEEP — domino hop ingest every {:.0f}s (no device-count stop).".format(HOP_INGEST_INTERVAL))
 
     ready = asyncio.run(check_bluetooth_ready())

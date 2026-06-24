@@ -135,9 +135,9 @@ SCREEN_RELAY_THEORIES: list[dict[str, str]] = [
         "narrative": "Browser picks window — show on HUD monitor",
         "flaw": "User must click Share and choose window each session",
         "flawType": "ethical",
-        "fix": "getDisplayMedia() in companion page → POST frames to /api/screen/frame",
-        "code": "ble_screen_relay.webrtc_relay_spec",
-        "module": "ble_screen_relay.py",
+        "fix": "getDisplayMedia() in /relay page → POST frames to /api/screen/frame",
+        "code": "screen_relay.html",
+        "module": "screen_relay.html",
         "feasibility": "high",
         "platform": "any",
     },
@@ -183,10 +183,10 @@ SCREEN_RELAY_THEORIES: list[dict[str, str]] = [
         "narrative": "Domino hop for screen — like hop_reporter but JPEG frames",
         "flaw": "Source device must run your companion app and tap Share",
         "flawType": "ethical",
-        "fix": "POST /api/screen/frame from cooperative phone (future); BLE finds device, Wi‑Fi carries video",
-        "code": "ble_screen_relay.companion_relay_spec",
+        "fix": "POST /api/screen/frame from cooperative browser after Share tap",
+        "code": "ble-scan-server.Handler.do_POST",
         "module": "ble_screen_relay.py",
-        "feasibility": "planned",
+        "feasibility": "high",
         "platform": "any",
     },
     {
@@ -207,10 +207,10 @@ SCREEN_RELAY_THEORIES: list[dict[str, str]] = [
         "narrative": "Phone scans QR on monitor to start consent relay",
         "flaw": "Extra step — not automatic from passive scan",
         "flawType": "operational",
-        "fix": "HUD displays session QR → phone opens https://127.0.0.1:8765/relay → Share screen",
-        "code": "ble_screen_relay.qr_handoff_spec",
+        "fix": "HUD displays session QR → phone opens /relay → getDisplayMedia → POST frames",
+        "code": "ble_frame_store.FRAME_STORE + screen_relay.html",
         "module": "ble_screen_relay.py",
-        "feasibility": "planned",
+        "feasibility": "high",
         "platform": "any",
     },
     {
@@ -348,9 +348,10 @@ def _operator_steps(platform: Platform, exfil_tier: str) -> list[str]:
         ])
     else:
         steps.extend([
-            "Open HUD relay page (planned) → browser Share screen (getDisplayMedia).",
+            "HUD → SCREEN RELAY → scan QR on phone (same Wi‑Fi, BLE_BIND_ALL=1).",
+            "Phone opens /relay → START SHARE → pick screen/window.",
+            "Live feed appears on monitor in Screen relay panel.",
             "Or: HDMI capture card from physical video out.",
-            "Or: scan QR on monitor to start WebRTC session from phone.",
         ])
     if exfil_tier == "LOCKED":
         steps.insert(2, "LOCKED: pair device in Windows Bluetooth first — still won't mirror; use paths above.")
@@ -361,19 +362,21 @@ def webrtc_relay_spec() -> dict[str, Any]:
     return {
         "endpoint": "POST /api/screen/frame",
         "browserApi": "navigator.mediaDevices.getDisplayMedia()",
-        "transport": "JPEG or WebRTC to localhost HUD canvas",
+        "relayPage": "/relay?session=...",
+        "viewer": "GET /api/screen/frame/latest?session=...",
         "consent": "Browser shows picker — user chooses window/screen",
-        "status": "spec_only",
+        "status": "implemented",
     }
 
 
 def companion_relay_spec() -> dict[str, Any]:
     return {
-        "pattern": "Like hop_reporter.py but posts base64 JPEG every N seconds",
+        "pattern": "Browser or companion posts base64 JPEG every 200ms",
         "endpoint": "POST /api/screen/frame",
-        "payload": {"nodeId": "...", "deviceAddress": "...", "frameJpeg": "...", "ts": 0},
-        "consent": "Companion app with foreground service + Share button",
-        "status": "spec_only",
+        "session": "POST /api/screen/session",
+        "payload": {"sessionId": "...", "deviceAddress": "...", "frameJpeg": "...", "ts": 0},
+        "consent": "User taps START SHARE on /relay page",
+        "status": "implemented",
     }
 
 
@@ -388,9 +391,9 @@ def replaykit_spec() -> dict[str, Any]:
 
 def qr_handoff_spec(session_base: str = "http://127.0.0.1:8765") -> dict[str, Any]:
     return {
-        "qrUrl": f"{session_base}/relay",
-        "flow": "HUD shows QR → phone opens URL → getDisplayMedia → stream to monitor",
-        "status": "spec_only",
+        "qrUrl": f"{session_base}/relay?session={{sessionId}}",
+        "flow": "HUD SCREEN RELAY → QR → phone opens /relay → START SHARE",
+        "status": "implemented",
     }
 
 
