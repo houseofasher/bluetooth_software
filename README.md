@@ -9,7 +9,7 @@
 [![BLE](https://img.shields.io/badge/stack-bleak%20%2B%20WinRT-8b5cf6?style=for-the-badge&logo=bluetooth&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge)](#license)
 
-[Quick Start](#quick-start) · [Architecture](#architecture) · [Naming Pipeline](#naming-pipeline) · [API](#api) · [Troubleshooting](#troubleshooting)
+[Quick Start](#quick-start) · [Architecture](#architecture) · [Hop map](#hop-map-domino-discovery) · [API](#api) · [Troubleshooting](#troubleshooting)
 
 </div>
 
@@ -159,11 +159,51 @@ await scan.stop();
 
 ---
 
+## Hop map (domino discovery)
+
+**Theory:** Device 1 sees Device 2, Device 2 sees Device 3 — a domino chain that extends discovery beyond one radio.
+
+**Reality:** Only **cooperative scanners** you register can hop. Strangers' phones do not relay.
+
+```mermaid
+flowchart LR
+    PC[This PC scanner] -->|hop 1| B[Device B]
+    B -->|bridge| PIX[Pixel hop scanner]
+    PIX -->|hop 1| C[Device C]
+    PIX -->|hop 1| D[Device D]
+    PC -.->|hop 2 via bridge| C
+    PC -.->|hop 2 via bridge| D
+```
+
+### Run the hop chain
+
+1. Start the server and **Start scan** on your PC (root scanner).
+2. On another machine or phone hotspot network, run a **hop reporter**:
+
+```bash
+# Example: Pixel as hop node 2 (use your PC's LAN IP if remote)
+python hop_reporter.py --node-id pixel-hop --label "Pixel 9" \
+  --self-address C0:1C:6A:A4:93:C6 \
+  --server http://192.168.1.10:8765
+```
+
+3. Open the dashboard **Hop map** section — chains show `This PC → Pixel 9 → …`.
+
+| Flaw (raw theory) | Fix (this build) |
+|---|---|
+| Unlimited passive hops through strangers | Only registered `hop/report` nodes |
+| Infinite distance | Each hop is still ~10–30 m radio; more hops = more of your scanners |
+| One scanner sees all | Server merges graphs from PC + companions |
+
+---
+
 ## Project layout
 
 ```
 bluetooth-scanning/
 ├── ble-scan-server.py      # HTTP server + scan orchestration + embedded UI
+├── ble_hop_graph.py        # Cooperative domino hop graph
+├── hop_reporter.py         # Companion scanner CLI (hop node)
 ├── ble_device_naming.py    # Multi-source name resolution
 ├── bluetooth-client.ts     # TypeScript API client
 ├── requirements.txt
@@ -181,6 +221,8 @@ bluetooth-scanning/
 | `GET` | `/api/devices` | Scan snapshot (`phase`, `devices`, `count`) |
 | `POST` | `/api/scan` | Start scan (503 if Bluetooth off) |
 | `POST` | `/api/stop` | Stop scan early |
+| `GET` | `/api/hop/graph` | Domino hop graph (nodes, edges, chains) |
+| `POST` | `/api/hop/report` | Companion scanner submits observations |
 
 ### Device object
 

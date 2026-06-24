@@ -20,10 +20,12 @@ from bleak.exc import BleakBluetoothNotAvailableError, BleakBluetoothNotAvailabl
 from ble_device_naming import (
     DeviceSignals,
     format_mac,
+    normalize_mac,
     resolve_name,
 )
 from ble_enrichment import build_device_record, remember_paired_aliases
 from ble_gatt_pull import pull_device_data_sync, pull_devices_sequential
+from ble_hop_graph import HOP_GRAPH
 from ble_location import SCANNER_LOCATION, reverse_geocode
 from ble_paired_windows import load_all_paired_names
 
@@ -74,6 +76,15 @@ class ScanState:
                 key=lambda d: d.get("rssi") if d.get("rssi") is not None else -999,
                 reverse=True,
             )
+            hop_graph = HOP_GRAPH.snapshot()
+            depth_map = {
+                normalize_mac(n["address"]): n.get("hopDepth")
+                for n in hop_graph.get("nodes", [])
+                if n.get("address")
+            }
+            for d in device_list:
+                mac = normalize_mac(d.get("macAddress") or d.get("id", ""))
+                d["hopDepth"] = depth_map.get(mac)
             return {
                 "phase": self.phase,
                 "running": self.phase in ("running", "resolving", "pulling"),
@@ -88,6 +99,7 @@ class ScanState:
                 "startedAt": self.started_at,
                 "finishedAt": self.finished_at,
                 "zeroResultHint": ZERO_RESULT_HINT if self.phase == "completed" and not device_list else None,
+                "hopGraph": hop_graph,
             }
 
     def begin(self) -> None:
@@ -111,9 +123,14 @@ class ScanState:
             self.phase = "pulling"
 
     def finish(self) -> None:
+        device_list: list[dict[str, Any]] = []
         with self.lock:
             self.phase = "failed" if self.error else "completed"
             self.finished_at = time.time()
+            if self.phase == "completed":
+                device_list = list(self.devices.values())
+        if device_list:
+            HOP_GRAPH.ingest_pc_scan(device_list)
 
     def fail(self, message: str) -> None:
         with self.lock:
@@ -349,6 +366,13 @@ HTML = """<!DOCTYPE html>
   </div>
   <div id="status">Idle.</div>
   <div id="hint"></div>
+  <section id="hopSection" style="margin:1.25rem 0;padding:0.75rem;border:1px solid #ddd;border-radius:8px;">
+    <h2 style="font-size:1rem;margin:0 0 0.5rem;">Hop map (domino discovery)</h2>
+    <p class="meta" id="hopNote">Each scanner reports what it hears. When a heard device is also a hop scanner, the chain continues.</p>
+    <div id="hopStats" class="meta"></div>
+    <ul id="hopChains" style="padding-left:1.2rem;font-size:0.85rem;"></ul>
+    <pre id="hopMermaid" style="font-size:0.75rem;overflow:auto;background:#f8f9fa;padding:0.5rem;border-radius:4px;"></pre>
+  </section>
   <ul id="list"><li class="empty">No devices yet.</li></ul>
 
   <script>
@@ -362,6 +386,9 @@ HTML = """<!DOCTYPE html>
     const locEl = document.getElementById("location");
     const locBtn = document.getElementById("locBtn");
     const pairedEl = document.getElementById("paired");
+    const hopStats = document.getElementById("hopStats");
+    const hopChains = document.getElementById("hopChains");
+    const hopMermaid = document.getElementById("hopMermaid");
 
     const SOURCE_LABELS = {
       broadcast: "advertised",
@@ -384,6 +411,28 @@ HTML = """<!DOCTYPE html>
 
     function escapeHtml(s) {
       return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+
+    function renderHopGraph(hop) {
+      if (!hop) return;
+      hopStats.textContent = `${hop.scannerCount} scanner(s), ${hop.nodeCount} node(s), max hop depth ${hop.maxHopDepth} — ${hop.note || ""}`;
+      if (!hop.chains?.length) {
+        hopChains.innerHTML = "<li>No multi-hop chains yet. Run hop_reporter.py on another device to extend the domino map.</li>";
+      } else {
+        hopChains.innerHTML = hop.chains.map((c) =>
+          `<li><strong>${escapeHtml(c.target)}</strong> — ${c.hopDepth} hop(s): ${c.path.map(escapeHtml).join(" → ")}</li>`
+        ).join("");
+      }
+      const lines = ["flowchart LR", "  root[This PC]"];
+      for (const s of hop.scanners || []) {
+        if (!s.isRoot) lines.push(`  ${s.nodeId.replace(/-/g,"_")}[${s.label}]`);
+      }
+      for (const e of (hop.edges || []).slice(0, 24)) {
+        const a = e.from.replace(/[^a-zA-Z0-9_]/g, "_");
+        const b = e.to.replace(/[^a-zA-Z0-9_]/g, "_");
+        lines.push(`  ${a} --> ${b}`);
+      }
+      hopMermaid.textContent = lines.join("\\n");
     }
 
     function render(devices) {
@@ -421,9 +470,11 @@ HTML = """<!DOCTYPE html>
           pull = `<div class="pull-box">Connected but no readable data exposed by this device.</div>`;
         }
         const pullBtn = `<button type="button" class="pullBtn" data-id="${escapeHtml(d.id)}">Retry pull</button>`;
+        const hopBadge = d.hopDepth != null && d.hopDepth > 0
+          ? `<span class="badge near">${d.hopDepth} hop(s) from PC</span>` : "";
         return `
         <li>
-          <strong>${escapeHtml(d.displayName || d.name || "Unknown device")}${badge}</strong>
+          <strong>${escapeHtml(d.displayName || d.name || "Unknown device")}${badge}${hopBadge}</strong>
           ${dist}
           ${street}
           ${locNote}
@@ -506,6 +557,7 @@ HTML = """<!DOCTYPE html>
       if (data.pairedDevices?.length) {
         pairedEl.innerHTML = `<strong>Paired on this PC:</strong> ${data.pairedDevices.map((p) => escapeHtml(p.name)).join(", ")} — names appear after connect phase if BLE uses a random MAC while scanning.`;
       }
+      renderHopGraph(data.hopGraph);
       hintEl.textContent = data.zeroResultHint ?? "";
 
       if (data.phase === "running") {
@@ -628,10 +680,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, SCANNER_LOCATION.snapshot())
             return
 
+        if path == "/api/hop/graph":
+            self._send_json(200, HOP_GRAPH.snapshot())
+            return
+
         self.send_error(404)
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+
+        if path == "/api/hop/report":
+            payload = self._read_json()
+            try:
+                HOP_GRAPH.register_scanner_report(payload)
+                self._send_json(200, {"ok": True, "hopGraph": HOP_GRAPH.snapshot()})
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+            return
 
         if path == "/api/location":
             payload = self._read_json()
