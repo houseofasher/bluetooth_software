@@ -147,7 +147,14 @@ pip install -r requirements.txt
 python ble-scan-server.py
 ```
 
-Open **http://127.0.0.1:8765** → green **RADIO ONLINE** banner → pick a **mission preset** → **SWEEP** → **ABORT** when done.
+Open **http://127.0.0.1:8765** — sweep **auto-starts** and runs forever (no device-count stop). Domino hop graph refreshes every 5s.
+
+For multi-hop chains, run a companion in a loop:
+
+```bash
+python hop_reporter.py --loop --node-id pixel-hop --label "Pixel 9" \
+  --self-address C0:1C:6A:A4:93:C6 --server http://YOUR_PC_IP:8765
+```
 
 ---
 

@@ -33,9 +33,11 @@ from ble_tactical import SCENARIOS, TACTICAL, mission_label
 
 PORT = 8765
 DISCOVER_ON_STOP_SEC = 3.0
+HOP_INGEST_INTERVAL = 5.0  # push live devices into domino hop graph while scanning
+PERSISTENT_SCAN = True  # never halt radio for device-count caps or post-scan phases
 ZERO_RESULT_HINT = (
-    "Scan finished with no advertisers. Check: Bluetooth ON, Windows Location ON, "
-    "and at least one BLE device nearby and powered on (phone/watch/headphones)."
+    "No advertisers yet — sweep is still running. Check Bluetooth ON, Windows Location ON, "
+    "and BLE devices nearby. Hop chains update every few seconds as companions report in."
 )
 
 Phase = Literal["idle", "running", "resolving", "pulling", "completed", "failed"]
@@ -67,9 +69,12 @@ class ScanState:
     paired_names: dict[str, str] = field(default_factory=dict)
     pulled_data: dict[str, dict[str, Any]] = field(default_factory=dict)
     error: str | None = None
-    stop_flag: threading.Event = field(default_factory=threading.Event)
+    sync_flag: threading.Event = field(default_factory=threading.Event)
+    scan_shutdown: threading.Event = field(default_factory=threading.Event)
     started_at: float | None = None
-    finished_at: float | None = None
+    last_hop_ingest_at: float | None = None
+    hop_ingest_count: int = 0
+    last_hop_depth_logged: int = 0
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -94,6 +99,10 @@ class ScanState:
                 "phase": self.phase,
                 "missionLabel": mission_label(self.phase),
                 "running": self.phase in ("running", "resolving", "pulling"),
+                "persistent": PERSISTENT_SCAN,
+                "hopIngestInterval": HOP_INGEST_INTERVAL,
+                "lastHopIngestAt": self.last_hop_ingest_at,
+                "hopIngestCount": self.hop_ingest_count,
                 "error": self.error,
                 "devices": device_list,
                 "count": len(device_list),
@@ -103,25 +112,48 @@ class ScanState:
                     for k, v in sorted(self.paired_names.items(), key=lambda x: x[1])
                 ],
                 "startedAt": self.started_at,
-                "finishedAt": self.finished_at,
-                "zeroResultHint": ZERO_RESULT_HINT if self.phase == "completed" and not device_list else None,
+                "zeroResultHint": ZERO_RESULT_HINT if self.phase == "running" and not device_list else None,
                 "hopGraph": hop_graph,
                 "tactical": tactical,
             }
 
     def begin(self) -> None:
         with self.lock:
+            if self.phase == "running":
+                return
             self.phase = "running"
             self.signals = {}
             self.devices = {}
             self.pulled_data = {}
             self.paired_names = load_all_paired_names()
             self.error = None
-            self.stop_flag.clear()
+            self.sync_flag.clear()
             self.started_at = time.time()
-            self.finished_at = None
+            self.last_hop_ingest_at = None
+            self.hop_ingest_count = 0
         TACTICAL.reset_mission()
         TACTICAL.on_phase_change("running")
+
+    def ingest_hop_live(self) -> int:
+        """Feed current device snapshot into domino hop graph without stopping sweep."""
+        with self.lock:
+            device_list = list(self.devices.values())
+            self.last_hop_ingest_at = time.time()
+        if not device_list:
+            return 0
+        HOP_GRAPH.ingest_pc_scan(device_list)
+        with self.lock:
+            self.hop_ingest_count += 1
+        max_depth = HOP_GRAPH.snapshot().get("maxHopDepth", 0)
+        with self.lock:
+            if max_depth > self.last_hop_depth_logged:
+                self.last_hop_depth_logged = max_depth
+                TACTICAL.log(
+                    "hop",
+                    f"DOMINO CHAIN · depth {max_depth} · {len(device_list)} contacts on root scanner",
+                    {"count": len(device_list), "maxHopDepth": max_depth},
+                )
+        return len(device_list)
 
     def begin_resolve(self) -> None:
         with self.lock:
@@ -134,22 +166,24 @@ class ScanState:
         TACTICAL.on_phase_change("pulling")
 
     def finish(self) -> None:
+        """Only used on radio failure — persistent sweep does not call this on a timer."""
         device_list: list[dict[str, Any]] = []
         with self.lock:
             self.phase = "failed" if self.error else "completed"
-            self.finished_at = time.time()
             if self.phase == "completed":
                 device_list = list(self.devices.values())
         TACTICAL.on_phase_change(self.phase)
         if device_list:
             HOP_GRAPH.ingest_pc_scan(device_list)
-            TACTICAL.log("mission", f"MISSION COMPLETE · {len(device_list)} contacts catalogued")
 
     def fail(self, message: str) -> None:
         with self.lock:
             self.error = message
             self.phase = "failed"
-            self.finished_at = time.time()
+
+    def request_sync(self) -> None:
+        """Soft sync — refresh names / hop graph without stopping the radio."""
+        self.sync_flag.set()
 
     def merge_advertisement(
         self,
@@ -229,7 +263,8 @@ class ScanState:
             return key in self.signals or key in self.devices
 
     def request_stop(self) -> None:
-        self.stop_flag.set()
+        """Legacy alias — persistent mode treats stop as hop sync, not radio off."""
+        self.request_sync()
 
 
 STATE = ScanState()
@@ -271,7 +306,7 @@ async def resolve_and_pull_phase() -> None:
         signals_copy = dict(STATE.signals)
         paired = dict(STATE.paired_names)
 
-    if STATE.stop_flag.is_set():
+    if STATE.sync_flag.is_set():
         with STATE.lock:
             STATE.signals = signals_copy
         STATE.apply_resolved_records()
@@ -318,13 +353,54 @@ async def resolve_and_pull_phase() -> None:
     STATE.apply_resolved_records()
 
 
+async def run_persistent_scan() -> None:
+    """Sweep forever; domino hop graph ingests live device list on an interval."""
+    STATE.begin()
+    scanner = BleakScanner(detection_callback=detection_callback, scanning_mode="active")
+    last_hop = 0.0
+
+    try:
+        await scanner.start()
+        TACTICAL.log("hop", "CONTINUOUS SWEEP — domino hop ingest active")
+
+        while not STATE.scan_shutdown.is_set():
+            now = time.time()
+            if now - last_hop >= HOP_INGEST_INTERVAL:
+                STATE.ingest_hop_live()
+                last_hop = now
+
+            if STATE.sync_flag.is_set():
+                STATE.sync_flag.clear()
+                STATE.apply_resolved_records()
+                STATE.ingest_hop_live()
+                TACTICAL.log("hop", "Hop sync complete — sweep continues")
+
+            await asyncio.sleep(0.25)
+    except BleakBluetoothNotAvailableError as exc:
+        STATE.fail(reason_message(exc.reason))
+    except Exception as exc:
+        STATE.fail(str(exc))
+    finally:
+        try:
+            await scanner.stop()
+        except Exception:
+            pass
+        if STATE.phase == "running":
+            STATE.fail("Scanner stopped unexpectedly")
+
+
 async def run_scan() -> None:
+    """Backward-compatible entry — persistent mode ignores one-shot stop phases."""
+    if PERSISTENT_SCAN:
+        await run_persistent_scan()
+        return
+
     STATE.begin()
     scanner = BleakScanner(detection_callback=detection_callback, scanning_mode="active")
 
     try:
         await scanner.start()
-        while not STATE.stop_flag.is_set():
+        while not STATE.scan_shutdown.is_set() and not STATE.sync_flag.is_set():
             await asyncio.sleep(0.2)
         await scanner.stop()
 
@@ -348,6 +424,24 @@ def run_scan_in_thread() -> None:
         loop.run_until_complete(run_scan())
     finally:
         loop.close()
+
+
+_SCAN_THREAD: threading.Thread | None = None
+_SCAN_THREAD_LOCK = threading.Lock()
+
+
+def ensure_scan_thread() -> bool:
+    """Start the persistent BLE sweep thread once (idempotent)."""
+    global _SCAN_THREAD
+    with _SCAN_THREAD_LOCK:
+        if _SCAN_THREAD is not None and _SCAN_THREAD.is_alive():
+            return False
+        snap = STATE.snapshot()
+        if snap["phase"] == "running":
+            return False
+        _SCAN_THREAD = threading.Thread(target=run_scan_in_thread, daemon=True, name="ble-persistent-scan")
+        _SCAN_THREAD.start()
+        return True
 
 
 _HTML_PATH = Path(__file__).with_name("tactical_hud.html")
@@ -532,8 +626,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/stop":
-            STATE.request_stop()
-            self._send_json(200, {"ok": True})
+            STATE.request_sync()
+            self._send_json(200, {"ok": True, "persistent": PERSISTENT_SCAN, "message": "Hop sync queued — sweep continues"})
             return
 
         if path == "/api/scenario":
@@ -569,7 +663,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/scan":
             snap = STATE.snapshot()
             if snap["phase"] in ("running", "resolving", "pulling"):
-                self._send_json(409, {"error": "Scan already running"})
+                self._send_json(200, {
+                    "ok": True,
+                    "continuous": True,
+                    "persistent": PERSISTENT_SCAN,
+                    "alreadyRunning": True,
+                })
                 return
 
             ready = asyncio.run(check_bluetooth_ready())
@@ -577,11 +676,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": ready["message"], "reason": ready.get("reason")})
                 return
 
-            threading.Thread(
-                target=run_scan_in_thread,
-                daemon=True,
-            ).start()
-            self._send_json(200, {"ok": True, "continuous": True})
+            ensure_scan_thread()
+            self._send_json(200, {"ok": True, "continuous": True, "persistent": PERSISTENT_SCAN})
             return
 
         self.send_error(404)
@@ -590,11 +686,20 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"#houseofasher tactical BLE HUD: http://127.0.0.1:{PORT}/")
-    print("SWEEP → ABORT → DECRYPT → EXFIL — mission presets in dashboard.")
+    print("CONTINUOUS SWEEP — domino hop ingest every {:.0f}s (no device-count stop).".format(HOP_INGEST_INTERVAL))
+
+    ready = asyncio.run(check_bluetooth_ready())
+    if ready["ready"]:
+        if ensure_scan_thread():
+            print("Auto-started persistent BLE sweep.")
+    else:
+        print(f"Bluetooth not ready yet: {ready['message']}")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\nStopping…")
+        STATE.scan_shutdown.set()
 
 
 if __name__ == "__main__":

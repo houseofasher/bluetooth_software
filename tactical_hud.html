@@ -115,7 +115,7 @@
         <div class="row">
           <select id="scenario"></select>
           <button id="startBtn" class="primary" disabled>SWEEP</button>
-          <button id="stopBtn" class="danger" disabled>ABORT</button>
+          <button id="stopBtn" type="button">SYNC HOPS</button>
           <button id="extractBtn" type="button">EXFIL PACKAGE</button>
           <label class="legend"><input type="checkbox" id="audioToggle" checked /> Sonar audio</label>
         </div>
@@ -398,20 +398,44 @@
       const phaseLabels = { running: "SWEEP", resolving: "DECRYPT", pulling: "EXFIL", completed: "COMPLETE", failed: "LOST" };
       if (data.phase === "running") {
         const elapsed = data.startedAt ? Math.floor(Date.now() / 1000 - data.startedAt) : 0;
-        statusEl.textContent = `SWEEP active · ${count} contact(s) · ${elapsed}s — ABORT when ready`;
-        startBtn.disabled = true; stopBtn.disabled = false;
+        const hops = data.hopIngestCount ?? 0;
+        const depth = data.hopGraph?.maxHopDepth ?? 0;
+        statusEl.textContent =
+          `CONTINUOUS SWEEP · ${count} contact(s) · ${elapsed}s · hop syncs ${hops} · chain depth ${depth}`;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
         return;
       }
       if (data.phase === "resolving" || data.phase === "pulling") {
-        statusEl.textContent = `${phaseLabels[data.phase] || data.phase}… ${count} device(s)`;
-        startBtn.disabled = true; stopBtn.disabled = false;
+        statusEl.textContent = `${phaseLabels[data.phase] || data.phase}… ${count} device(s) — sweep continues`;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
         return;
       }
+
+      if (data.phase === "failed") {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        statusEl.textContent = data.error || "Signal lost.";
+        return;
+      }
+
+      // Persistent mode: keep polling even if phase label is idle/completed
+      if (data.persistent && data.phase !== "failed") {
+        if (!pollTimer) {
+          pollTimer = setInterval(poll, 400);
+        }
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusEl.textContent = `CONTINUOUS SWEEP · ${count} contact(s)`;
+        return;
+      }
+
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-      startBtn.disabled = false; stopBtn.disabled = true;
-      statusEl.textContent = data.phase === "failed"
-        ? (data.error || "Signal lost.")
-        : (count ? `MISSION COMPLETE · ${count} contact(s)` : "Sweep complete · 0 contacts");
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      statusEl.textContent = count ? `Standing by · ${count} contact(s)` : "Standing by.";
     }
 
     async function poll() {
@@ -448,7 +472,20 @@
 
     async function stopScan() {
       await fetch("/api/stop", { method: "POST" }).catch(() => {});
-      playBlip(180, 0.25);
+      playBlip(520, 0.1);
+      await poll();
+    }
+
+    async function bootSweep() {
+      const ready = await refreshHealth();
+      if (!ready) return;
+      pollTimer = setInterval(poll, 400);
+      const res = await fetch("/api/scan", { method: "POST" });
+      const data = await res.json();
+      if (res.ok || data.alreadyRunning) {
+        playBlip(220, 0.15);
+        stopBtn.disabled = false;
+      }
       await poll();
     }
 
@@ -493,7 +530,7 @@
 
     initBattlefield();
     loadScenarios();
-    refreshHealth();
+    bootSweep();
     connectSSE();
   </script>
 </body>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Companion hop scanner — reports what this machine hears to the hop graph server."""
+"""Companion hop scanner — continuously reports what this machine hears to the hop graph."""
 
 from __future__ import annotations
 
@@ -29,8 +29,12 @@ async def scan_once(duration: float) -> list[dict]:
             "seenAt": int(time.time() * 1000),
         }
 
-    async with BleakScanner(detection_callback=callback, scanning_mode="active"):
+    scanner = BleakScanner(detection_callback=callback, scanning_mode="active")
+    await scanner.start()
+    try:
         await asyncio.sleep(duration)
+    finally:
+        await scanner.stop()
 
     return list(seen.values())
 
@@ -53,16 +57,47 @@ def post_report(server: str, node_id: str, label: str, self_address: str | None,
         return json.loads(resp.read().decode("utf-8"))
 
 
+async def run_loop(
+    server: str,
+    node_id: str,
+    label: str,
+    self_address: str | None,
+    duration: float,
+    interval: float,
+) -> None:
+    print(f"Continuous hop node '{label}' → {server} (scan {duration}s, repeat every {interval}s)")
+    while True:
+        observations = await scan_once(duration)
+        depth = 0
+        try:
+            result = post_report(server, node_id, label, self_address, observations)
+            depth = result.get("hopGraph", {}).get("maxHopDepth", 0)
+            print(
+                f"[{time.strftime('%H:%M:%S')}] reported {len(observations)} contact(s) · "
+                f"graph depth {depth}"
+            )
+        except urllib.error.URLError as exc:
+            print(f"[{time.strftime('%H:%M:%S')}] server unreachable: {exc}", file=sys.stderr)
+        await asyncio.sleep(interval)
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description="BLE hop companion reporter")
     parser.add_argument("--server", default="http://127.0.0.1:8765", help="Hop graph server URL")
     parser.add_argument("--node-id", required=True, help="Unique scanner id (e.g. pixel-hop-1)")
     parser.add_argument("--label", default=None, help="Human label for this scanner")
     parser.add_argument("--self-address", default=None, help="This device's BLE MAC (links domino chain)")
-    parser.add_argument("--duration", type=float, default=12.0, help="Scan seconds")
+    parser.add_argument("--duration", type=float, default=12.0, help="Seconds to scan each cycle")
+    parser.add_argument("--interval", type=float, default=15.0, help="Seconds between hop reports (loop mode)")
+    parser.add_argument("--loop", action="store_true", help="Never stop — continuous domino hop reporting")
     args = parser.parse_args()
 
     label = args.label or args.node_id
+
+    if args.loop:
+        await run_loop(args.server, args.node_id, label, args.self_address, args.duration, args.interval)
+        return 0
+
     print(f"Scanning {args.duration}s as hop node '{label}'...")
     observations = await scan_once(args.duration)
     print(f"Seen {len(observations)} device(s), posting to {args.server}...")
