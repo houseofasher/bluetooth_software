@@ -21,8 +21,10 @@ from ble_device_naming import (
     DeviceSignals,
     enrich_with_gatt_names,
     load_windows_paired_names,
-    signals_to_record,
 )
+from ble_enrichment import build_device_record
+from ble_gatt_pull import pull_device_data_sync
+from ble_location import SCANNER_LOCATION, reverse_geocode
 
 PORT = 8765
 SCAN_SECONDS = 20
@@ -57,6 +59,7 @@ class ScanState:
     signals: dict[str, DeviceSignals] = field(default_factory=dict)
     devices: dict[str, dict[str, Any]] = field(default_factory=dict)
     paired_names: dict[str, str] = field(default_factory=dict)
+    pulled_data: dict[str, dict[str, Any]] = field(default_factory=dict)
     error: str | None = None
     stop_flag: threading.Event = field(default_factory=threading.Event)
     started_at: float | None = None
@@ -75,6 +78,7 @@ class ScanState:
                 "error": self.error,
                 "devices": device_list,
                 "count": len(device_list),
+                "scannerLocation": SCANNER_LOCATION.snapshot(),
                 "startedAt": self.started_at,
                 "finishedAt": self.finished_at,
                 "zeroResultHint": ZERO_RESULT_HINT if self.phase == "completed" and not device_list else None,
@@ -85,6 +89,7 @@ class ScanState:
             self.phase = "running"
             self.signals = {}
             self.devices = {}
+            self.pulled_data = {}
             self.paired_names = load_windows_paired_names()
             self.error = None
             self.stop_flag.clear()
@@ -119,16 +124,27 @@ class ScanState:
                 existing = DeviceSignals(address=device.address)
                 self.signals[key] = existing
             existing.merge(device, advertisement_data, source)
-            record = signals_to_record(existing, self.paired_names)
+            pulled = self.pulled_data.get(key)
+            record = build_device_record(existing, self.paired_names, SCANNER_LOCATION, pulled)
             record["lastSeen"] = int(time.time() * 1000)
             self.devices[key] = record
 
     def apply_resolved_records(self) -> None:
         with self.lock:
             for key, signals in self.signals.items():
-                record = signals_to_record(signals, self.paired_names)
+                pulled = self.pulled_data.get(key)
+                record = build_device_record(signals, self.paired_names, SCANNER_LOCATION, pulled)
                 record["lastSeen"] = int(time.time() * 1000)
                 self.devices[key] = record
+
+    def set_pulled_data(self, address: str, payload: dict[str, Any]) -> None:
+        with self.lock:
+            self.pulled_data[address] = payload
+            signals = self.signals.get(address)
+            if signals:
+                record = build_device_record(signals, self.paired_names, SCANNER_LOCATION, payload)
+                record["lastSeen"] = int(time.time() * 1000)
+                self.devices[address] = record
 
     def request_stop(self) -> None:
         self.stop_flag.set()
@@ -221,7 +237,7 @@ HTML = """<!DOCTYPE html>
   <title>BLE Scan</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
     h1 { font-size: 1.25rem; }
     .row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
     button { padding: 0.5rem 1rem; cursor: pointer; }
@@ -246,6 +262,11 @@ HTML = """<!DOCTYPE html>
     .badge.paired { background: #e8eef9; color: #1a3d8a; }
     .badge.gatt { background: #f3e8f9; color: #5c1a8a; }
     .badge.inferred { background: #fff6e6; color: #8a5a1a; }
+    .badge.immediate { background: #e8f4e8; color: #1a5c1a; }
+    .badge.near { background: #e8eef9; color: #1a3d8a; }
+    .badge.far { background: #f5f5f5; color: #666; }
+    .pull-box { margin-top: 0.5rem; padding: 0.5rem; background: #f8f9fa; border-radius: 4px; font-size: 0.78rem; }
+    .pull-box code { word-break: break-all; }
     .meta { color: #666; font-size: 0.8rem; display: block; }
     .empty { color: #888; font-style: italic; }
   </style>
@@ -253,6 +274,9 @@ HTML = """<!DOCTYPE html>
 <body>
   <h1>Bluetooth LE scan</h1>
   <div id="health">Checking Bluetooth…</div>
+  <div id="location" class="meta" style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;border:1px solid #ddd;border-radius:6px;">
+    Location not set — <button id="locBtn" type="button">Share my location</button> (for home address co-location)
+  </div>
   <div class="row">
     <button id="startBtn" disabled>Start scan</button>
     <button id="stopBtn" disabled>Stop</button>
@@ -269,6 +293,8 @@ HTML = """<!DOCTYPE html>
     const listEl = document.getElementById("list");
     const startBtn = document.getElementById("startBtn");
     const stopBtn = document.getElementById("stopBtn");
+    const locEl = document.getElementById("location");
+    const locBtn = document.getElementById("locBtn");
 
     const SOURCE_LABELS = {
       broadcast: "advertised",
@@ -277,6 +303,8 @@ HTML = """<!DOCTYPE html>
       inferred: "inferred",
       address: "address only",
     };
+
+    const ZONE_LABELS = { immediate: "same room", near: "nearby", far: "far", unknown: "?" };
 
     function escapeHtml(s) {
       return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -290,19 +318,78 @@ HTML = """<!DOCTYPE html>
       listEl.innerHTML = devices.map((d) => {
         const src = d.nameSource || "address";
         const badge = `<span class="badge ${escapeHtml(src)}">${escapeHtml(SOURCE_LABELS[src] || src)}</span>`;
-        const broadcast = d.broadcastName && d.broadcastName !== d.displayName
-          ? `<span class="meta">Advertised as: ${escapeHtml(d.broadcastName)}</span>` : "";
+        const zone = d.proximityZone || "unknown";
+        const zoneBadge = `<span class="badge ${escapeHtml(zone)}">${escapeHtml(ZONE_LABELS[zone] || zone)}</span>`;
+        const dist = d.distanceLabel ? `<span class="meta"><strong>~${escapeHtml(d.distanceLabel)} away</strong> ${zoneBadge} · RSSI ${d.rssi ?? "?"} dBm</span>` : "";
+        const loc = d.location?.coLocated && d.location.estimatedAddressShort
+          ? `<span class="meta">Likely at your location: ${escapeHtml(d.location.estimatedAddressShort)}</span>`
+          : (d.location?.contextNote ? `<span class="meta">${escapeHtml(d.location.contextNote)}</span>` : "");
         const mfg = d.manufacturer ? `<span class="meta">Manufacturer: ${escapeHtml(d.manufacturer)}</span>` : "";
+        let pull = "";
+        if (d.pulledData?.data && Object.keys(d.pulledData.data).length) {
+          pull = `<div class="pull-box"><strong>Pulled to this device:</strong><br>${Object.entries(d.pulledData.data).map(([k,v]) => `${escapeHtml(k)}: <code>${escapeHtml(v)}</code>`).join("<br>")}</div>`;
+        } else if (d.pulledData?.errors?.length) {
+          pull = `<div class="pull-box">Pull failed: ${escapeHtml(d.pulledData.errors[0])}</div>`;
+        }
+        const pullBtn = `<button type="button" class="pullBtn" data-id="${escapeHtml(d.id)}">Pull GATT data here</button>`;
         return `
         <li>
-          <strong>${escapeHtml(d.displayName || d.name || "(unnamed)")}${badge}</strong>
-          ${broadcast}
+          <strong>${escapeHtml(d.displayName || d.name)}${badge}</strong>
+          ${dist}
+          ${loc}
           ${mfg}
-          <span class="meta">RSSI: ${d.rssi ?? "?"} dBm</span>
-          <span class="meta">Address: ${escapeHtml(d.id)}</span>
+          <span class="meta">MAC: ${escapeHtml(d.id)}</span>
           ${d.uuids?.length ? `<span class="meta">Services: ${d.uuids.map(escapeHtml).join(", ")}</span>` : ""}
+          ${pull}
+          ${pullBtn}
         </li>`;
       }).join("");
+      document.querySelectorAll(".pullBtn").forEach((btn) => {
+        btn.addEventListener("click", () => pullData(btn.dataset.id));
+      });
+    }
+
+    async function shareLocation() {
+      if (!navigator.geolocation) {
+        locEl.textContent = "Geolocation not supported in this browser.";
+        return;
+      }
+      locEl.textContent = "Requesting location permission…";
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const res = await fetch("/api/location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracyMeters: pos.coords.accuracy,
+          }),
+        });
+        const data = await res.json();
+        if (data.addressShort) {
+          locEl.innerHTML = `<strong>Your location:</strong> ${escapeHtml(data.addressShort)} <span class="meta">(used to estimate if nearby devices are at your home)</span>`;
+        } else {
+          locEl.textContent = data.message || "Location saved.";
+        }
+      }, (err) => {
+        locEl.textContent = `Location denied: ${err.message}`;
+      }, { enableHighAccuracy: true, timeout: 15000 });
+    }
+
+    async function pullData(address) {
+      statusEl.textContent = `Pulling GATT data from ${address}…`;
+      const res = await fetch("/api/pull", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        statusEl.textContent = data.error || "Pull failed.";
+        return;
+      }
+      statusEl.textContent = data.ok ? `Pulled data from ${address}` : `No readable data from ${address}`;
+      await poll();
     }
 
     async function refreshHealth() {
@@ -323,6 +410,9 @@ HTML = """<!DOCTYPE html>
 
     function applySnapshot(data) {
       render(data.devices ?? []);
+      if (data.scannerLocation?.addressShort) {
+        locEl.innerHTML = `<strong>Your location:</strong> ${escapeHtml(data.scannerLocation.addressShort)}`;
+      }
       hintEl.textContent = data.zeroResultHint ?? "";
 
       if (data.phase === "running") {
@@ -387,6 +477,7 @@ HTML = """<!DOCTYPE html>
 
     startBtn.addEventListener("click", startScan);
     stopBtn.addEventListener("click", stopScan);
+    locBtn.addEventListener("click", shareLocation);
     refreshHealth();
   </script>
 </body>
@@ -405,6 +496,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            return {}
+        body = self.rfile.read(length)
+        return json.loads(body.decode("utf-8"))
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -427,10 +525,55 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, STATE.snapshot())
             return
 
+        if path == "/api/location":
+            self._send_json(200, SCANNER_LOCATION.snapshot())
+            return
+
         self.send_error(404)
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+
+        if path == "/api/location":
+            payload = self._read_json()
+            lat = payload.get("latitude")
+            lon = payload.get("longitude")
+            if lat is None or lon is None:
+                self._send_json(400, {"error": "latitude and longitude required"})
+                return
+            SCANNER_LOCATION.set_coords(
+                float(lat),
+                float(lon),
+                payload.get("accuracyMeters"),
+                payload.get("source", "browser"),
+            )
+            try:
+                full, short = reverse_geocode(float(lat), float(lon))
+                SCANNER_LOCATION.set_address(full, short)
+                self._send_json(200, {**SCANNER_LOCATION.snapshot(), "message": "Location updated"})
+            except Exception as exc:
+                self._send_json(200, {
+                    **SCANNER_LOCATION.snapshot(),
+                    "message": f"Coords saved; address lookup failed: {exc}",
+                })
+            STATE.apply_resolved_records()
+            return
+
+        if path == "/api/pull":
+            payload = self._read_json()
+            address = payload.get("address")
+            if not address:
+                self._send_json(400, {"error": "address required"})
+                return
+            with STATE.lock:
+                known = address in STATE.signals or address in STATE.devices
+            if not known:
+                self._send_json(404, {"error": "Device not in last scan — scan first"})
+                return
+            result = pull_device_data_sync(address)
+            STATE.set_pulled_data(address, result)
+            self._send_json(200, result)
+            return
 
         if path == "/api/stop":
             STATE.request_stop()

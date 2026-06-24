@@ -3,13 +3,40 @@
 export type HexString = `0x${string}`;
 
 export type NameSource = "broadcast" | "paired" | "gatt" | "inferred" | "address";
-
+export type ProximityZone = "immediate" | "near" | "far" | "unknown";
 export type ScanPhase = "idle" | "running" | "resolving" | "completed" | "failed";
 
 export interface HealthStatus {
   ready: boolean;
   message: string;
   reason?: string;
+}
+
+export interface ScannerLocation {
+  latitude: number | null;
+  longitude: number | null;
+  accuracyMeters: number | null;
+  address: string | null;
+  addressShort: string | null;
+  source: string | null;
+  ready: boolean;
+}
+
+export interface DeviceLocationContext {
+  coLocated: boolean;
+  estimatedAddress: string | null;
+  estimatedAddressShort: string | null;
+  scannerLatitude: number | null;
+  scannerLongitude: number | null;
+  contextNote: string;
+}
+
+export interface PulledDeviceData {
+  ok: boolean;
+  address: string;
+  data: Record<string, string | number>;
+  errors: string[];
+  pulledAt: number;
 }
 
 export interface ScannedDevice {
@@ -21,6 +48,16 @@ export interface ScannedDevice {
   manufacturer: string | null;
   inferredDetail: string | null;
   rssi: number | null;
+  txPower: number | null;
+  distanceMeters: number | null;
+  distanceFeet: number | null;
+  distanceMiles: number | null;
+  distanceLabel: string;
+  proximityZone: ProximityZone;
+  distanceNote: string;
+  location: DeviceLocationContext;
+  pulledData: PulledDeviceData | null;
+  pullStatus: "ready" | "ok" | "failed";
   uuids: string[];
   source?: string;
   lastSeen: number;
@@ -32,6 +69,7 @@ export interface ScanSnapshot {
   error: string | null;
   devices: ScannedDevice[];
   count: number;
+  scannerLocation: ScannerLocation;
   zeroResultHint: string | null;
 }
 
@@ -74,10 +112,6 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
-/**
- * Primary path: talks to ble-scan-server.py (native Windows BLE).
- * Does not depend on experimental browser scanning APIs.
- */
 export class BluetoothClient {
   private readonly baseUrl: string;
 
@@ -91,6 +125,30 @@ export class BluetoothClient {
 
   public async getDevices(): Promise<ScanSnapshot> {
     return fetchJson<ScanSnapshot>(`${this.baseUrl}/api/devices`);
+  }
+
+  public async getScannerLocation(): Promise<ScannerLocation> {
+    return fetchJson<ScannerLocation>(`${this.baseUrl}/api/location`);
+  }
+
+  public async setScannerLocation(
+    latitude: number,
+    longitude: number,
+    accuracyMeters?: number,
+  ): Promise<ScannerLocation & { message?: string }> {
+    return fetchJson(`${this.baseUrl}/api/location`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ latitude, longitude, accuracyMeters }),
+    });
+  }
+
+  public async pullDeviceData(address: string): Promise<PulledDeviceData> {
+    return fetchJson<PulledDeviceData>(`${this.baseUrl}/api/pull`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address }),
+    });
   }
 
   public async startScan(opts: ScanOptions = {}): Promise<ScanHandle> {
@@ -135,10 +193,6 @@ export class BluetoothClient {
     };
   }
 
-  /**
-   * Browser-only fallback: device picker (no passive scan).
-   * Use when you need GATT connect from the page itself.
-   */
   public async connectViaBrowser(opts: ConnectOptions = {}): Promise<ConnectedDevice> {
     assertNotAborted(opts.signal);
 
@@ -180,13 +234,3 @@ export class BluetoothClient {
     return { device, server, disconnect, readOnce };
   }
 }
-
-// Example:
-// const client = new BluetoothClient();
-// const health = await client.checkHealth();
-// if (!health.ready) throw new Error(health.message);
-// const scan = await client.startScan({
-//   onUpdate: (s) => console.log(s.phase, s.count, s.devices),
-// });
-// await new Promise((r) => setTimeout(r, 15000));
-// await scan.stop();
