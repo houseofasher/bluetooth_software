@@ -37,6 +37,7 @@ from ble_theory import (
     security_summary,
     theory_snapshot,
 )
+from ble_screen_relay import recommend_relay_path, screen_relay_snapshot
 
 PORT = 8765
 DISCOVER_ON_STOP_SEC = 3.0
@@ -564,6 +565,19 @@ class Handler(BaseHTTPRequestHandler):
             devices = STATE.snapshot().get("devices", [])
             snap["securitySummary"] = security_summary(devices)
             self._send_json(200, snap)
+            return
+
+        if path == "/api/screen/relay":
+            qs = parse_qs(urlparse(self.path).query)
+            address = (qs.get("address") or [""])[0]
+            device = None
+            if address:
+                snap = STATE.snapshot()
+                device = next(
+                    (d for d in snap["devices"] if format_mac(d.get("id", "")) == format_mac(address)),
+                    None,
+                )
+            self._send_json(200, screen_relay_snapshot(device))
             return
 
         if path == "/api/brief":

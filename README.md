@@ -28,7 +28,7 @@
 | **HUD** | Mission phases, chrono blackbox, Leaflet map, 3D hop battlefield, intel panels, sonar audio |
 | **Naming** | Broadcast → paired registry → GATT → inference → MAC suffix |
 | **Intel** | Passive adv archaeology + deep GATT pull + per-device theory chains |
-| **Theories** | **81** narrative → flaw → fix → code chains (incl. security, privacy, legal, ethical) |
+| **Theories** | **101** narrative → flaw → fix → code chains (incl. screen relay + security) |
 | **Stack** | Python · bleak · WinRT · Leaflet · Three.js HUD · optional TypeScript client |
 | **Privacy** | Runs on localhost; consent-based; `silent_observe` disables GATT connect |
 
@@ -225,7 +225,7 @@ narrative → flaw (technical | security | privacy | legal | ethical | operation
 | **passive** | 9 | `ble_adv_intel.py`, `ble_device_naming.py` | iBeacon, Eddystone, Apple continuity, Swift Pair |
 | **gatt** | 14 | `ble_gatt_pull.py` | Battery, DIS dossier, HR notify, full GATT atlas |
 | **security** | 20 | `ble-scan-server.py`, `ble_theory.py` | Local bind, hop report auth, XOR cipher limits, serial exposure |
-| **architecture** | 8 | `ble_hop_graph.py`, `ble_distance.py` | Domino graph, RSSI distance, Leaflet rings |
+| **screen_relay** | 20 | `ble_screen_relay.py` | scrcpy, AirPlay, WebRTC, HDMI, companion frame relay |
 
 **Live catalog:** `GET /api/theories` — filterable in the HUD by flaw type (security, privacy, legal, etc.)
 
@@ -245,6 +245,26 @@ Each device record includes `theories[]` — applicable chains for that contact 
 | Co-location inference | Co-location ≠ device's home address | `contextNote` — scanner GPS only |
 
 Mission brief (`GET /api/brief`) includes a **Security & ethics** section with live counts (GATT locked, serials read, health reads).
+
+### Screen relay theories (`ble_screen_relay.py`) — 20 chains
+
+**BLE cannot show another device's screen.** GATT `LOCKED` means the OS blocked connect — not pixels. To see a phone/laptop on your monitor you need a **consent-based video path**:
+
+| Theory | Flaw | Fix (what actually works) |
+|:---|:---|:---|
+| BLE framebuffer | ~1 Mbps, no screen GATT char | BLE finds device; Wi‑Fi/USB carries video |
+| GATT screen blocked | iOS/Android never expose display to strangers | Switch to AirPlay / scrcpy / WebRTC |
+| Covert mirror | Illegal without consent | **Not supported** — own device or explicit approval |
+| **scrcpy (Android)** | USB debugging + RSA approve | `scrcpy` after user taps Allow |
+| **AirPlay (iOS)** | User must start Screen Mirroring | UxPlay / LonelyScreen receiver on PC |
+| **WebRTC share** | User picks window in browser | `getDisplayMedia()` → planned `/api/screen/frame` |
+| **HDMI capture** | Needs cable | Capture dongle → OBS / second monitor |
+| **Windows project** | Same network | Win+K → project to this PC |
+| **Companion relay** | Like hop_reporter for JPEG frames | User runs app + taps Share (planned) |
+| **QR handoff** | Not automatic from scan | Phone scans QR on HUD → starts relay session |
+
+`GET /api/screen/relay?address=` — platform guess + recommended path + operator steps.  
+HUD: **SCREEN RELAY** button on `GATT LOCKED` contacts.
 
 ### Core tactical theories
 
@@ -335,10 +355,11 @@ Background pull: every 45s + on **SYNC HOPS**. Manual: **PULL GATT** per device 
 | `GET` | `/api/extract?format=cipher&password=` | Password-scrambled exfil ZIP (lab-only XOR) |
 | `GET` | `/api/brief` | Plain-text mission after-action brief + security posture |
 | `GET` | `/api/replay` | Time-dilated replay frame buffer |
-| `GET` | `/api/theories` | Full 81-chain catalog + live `securitySummary` |
+| `GET` | `/api/theories` | Full 101-chain catalog + live `securitySummary` |
 | `GET` | `/api/location` | Scanner GPS snapshot |
 | `POST` | `/api/location` | Set scanner coords (browser geolocation) |
 | `POST` | `/api/pull` | Manual GATT pull `{ "address": "..." }` |
+| `GET` | `/api/screen/relay?address=` | Screen relay theories + consent-based mirror path |
 | `GET` | `/api/events/stream` | SSE war room event stream |
 | `POST` | `/api/scenario` | Set mission preset `{ "scenario": "perimeter" }` |
 | `POST` | `/api/watchlist` | Target lock `{ "address": "...", "action": "toggle" }` |
@@ -408,7 +429,8 @@ python hop_reporter.py --node-id pixel-hop --label "Pixel 9" \
 bluetooth-scanning/
 ├── ble-scan-server.py      # HTTP server + persistent scan + auto GATT pull
 ├── tactical_hud.html       # #houseofasher tactical HUD (Leaflet map + intel panels)
-├── ble_theory.py           # Unified 81-chain narrative→flaw→fix→code corpus
+├── ble_screen_relay.py     # Screen mirror theories (scrcpy, AirPlay, WebRTC, HDMI…)
+├── ble_theory.py           # Unified 101-chain narrative→flaw→fix→code corpus
 ├── ble_tactical.py         # Chrono, fingerprints, trails, scenarios, exfil
 ├── ble_sci_fi.py           # Extended theory engine (clone, spoof, quorum, replay…)
 ├── ble_adv_intel.py        # Passive adv archaeology (iBeacon, Eddystone, mfg hints)
@@ -439,7 +461,7 @@ bluetooth-scanning/
 | `POST` | `/api/pull` | Manual GATT pull `{ "address": "AA:BB:CC:DD:EE:FF" }` |
 | `GET` | `/api/hop/graph` | Domino hop graph (nodes, edges, chains) |
 | `POST` | `/api/hop/report` | Companion scanner submits observations |
-| `GET` | `/api/theories` | 81 theory chains + security summary |
+| `GET` | `/api/theories` | 101 theory chains + security summary |
 
 ### Device object (selected fields)
 
@@ -541,7 +563,7 @@ mindmap
     Clarity
       nameSource badges
       exfilTier labels
-      81 theory chains
+      101 theory chains
     Security
       localhost bind
       flawType catalog
@@ -564,6 +586,6 @@ MIT — see [LICENSE](LICENSE).
 
 **#houseofasher** · [shep95/bluetooth-scanning](https://github.com/shep95/bluetooth-scanning) · [houseofasher/bluetooth_software](https://github.com/houseofasher/bluetooth_software)
 
-Tactical BLE discovery for Windows — honest naming, real radio physics, 81 narrative→flaw→fix→code chains, sci-fi presentation.
+Tactical BLE discovery for Windows — honest naming, real radio physics, 101 narrative→flaw→fix→code chains, sci-fi presentation.
 
 </div>

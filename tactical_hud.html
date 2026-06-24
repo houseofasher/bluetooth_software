@@ -212,6 +212,12 @@
       </div>
 
       <div class="panel">
+        <h2>Screen relay theories</h2>
+        <div id="screenRelayPanel" class="meta">BLE finds devices — Wi‑Fi/USB/AirPlay/scrcpy show screens (consent required).</div>
+        <div id="screenRelaySteps" class="meta" style="margin-top:0.5rem;"></div>
+      </div>
+
+      <div class="panel">
         <h2>Signal contacts</h2>
         <ul id="list"><li class="meta">No devices yet.</li></ul>
       </div>
@@ -293,6 +299,8 @@
     const voiceBtn = document.getElementById("voiceBtn");
     const redBlueToggle = document.getElementById("redBlueToggle");
     const sciFiPanel = document.getElementById("sciFiPanel");
+    const screenRelayPanel = document.getElementById("screenRelayPanel");
+    const screenRelaySteps = document.getElementById("screenRelaySteps");
     const threatBoard = document.getElementById("threatBoard");
     const replaySlider = document.getElementById("replaySlider");
     const replayPanel = document.getElementById("replayPanel");
@@ -318,6 +326,36 @@
     function exfilTierBadge(tier) {
       const t = tier || "UNKNOWN";
       return `<span class="exfil-tier ${exfilTierClass(t)}">${escapeHtml(EXFIL_LABELS[t] || t)}</span>`;
+    }
+
+    function renderScreenRelayForDevice(d) {
+      if (!d || d.exfilTier !== "LOCKED") return "";
+      return `<div class="intel-block"><h4>Screen relay (GATT cannot show pixels)</h4>
+        <div class="intel-row">Use <strong>SCREEN RELAY</strong> button or pair + scrcpy/AirPlay paths below.</div></div>`;
+    }
+
+    function renderScreenRelayPanel(relay) {
+      if (!relay || !relay.recommendation) return;
+      const rec = relay.recommendation;
+      screenRelayPanel.innerHTML =
+        `<strong>${escapeHtml(rec.narrative || "Screen relay")}</strong><br>
+        <span class="meta">${escapeHtml(relay.honestLimit || "")}</span><br>
+        Platform guess: <code>${escapeHtml(rec.guessedPlatform || "?")}</code> ·
+        GATT tier: <code>${escapeHtml(rec.gattExfilTier || "?")}</code><br>
+        <strong>Recommended:</strong> ${escapeHtml(rec.recommendedTheoryId || "?")} — ${escapeHtml(rec.recommendedFix || "")}<br>
+        <code class="theory-code">${escapeHtml(rec.recommendedCode || "")}</code>`;
+      const steps = rec.operatorSteps || [];
+      screenRelaySteps.innerHTML = steps.length
+        ? "<strong>Operator steps</strong><br>" + steps.map((s) => `· ${escapeHtml(s)}`).join("<br>")
+        : "";
+    }
+
+    async function loadScreenRelay(address) {
+      const url = address
+        ? "/api/screen/relay?address=" + encodeURIComponent(address)
+        : "/api/screen/relay";
+      const res = await fetch(url);
+      renderScreenRelayPanel(await res.json());
     }
 
     function renderPassiveIntel(pi) {
@@ -386,7 +424,8 @@
     }
 
     function renderDeviceIntel(d) {
-      return renderPassiveIntel(d.passiveIntel) + renderGattFields(d) + renderGattAtlas(d.gattAtlas) + renderDeviceTheories(d.theories);
+      return renderPassiveIntel(d.passiveIntel) + renderGattFields(d) + renderGattAtlas(d.gattAtlas) +
+        renderDeviceTheories(d.theories) + renderScreenRelayForDevice(d);
     }
 
     function escapeHtml(s) {
@@ -726,6 +765,7 @@
       const f = filter || "all";
       theoriesPanel.innerHTML =
         `<div class="meta" style="margin-bottom:0.5rem">${escapeHtml(data.pattern || "")} · ${data.total || 0} chains</div>` +
+        renderTheorySection("Screen relay", data.screenRelay, f) +
         renderTheorySection("Security flaws", data.security, f) +
         renderTheorySection("Tactical sci-fi", data.tactical, f) +
         renderTheorySection("Passive intel", data.passive, f) +
@@ -786,6 +826,9 @@
         const fp = d.fingerprint ? `<span class="meta">Signature: <code>${escapeHtml(d.fingerprint)}</code></span>` : "";
         const watchBtn = `<button type="button" class="watchBtn" data-id="${escapeHtml(d.id)}">${d.onWatchlist ? "★ LOCKED" : "☆ LOCK"}</button>`;
         const pullBtn = `<button type="button" class="pullBtn" data-id="${escapeHtml(d.id)}">PULL GATT</button>`;
+        const relayBtn = d.exfilTier === "LOCKED"
+          ? `<button type="button" class="relayBtn" data-id="${escapeHtml(d.id)}">SCREEN RELAY</button>`
+          : "";
         const dossierId = "dossier-" + escapeHtml(d.id).replace(/:/g, "");
         const intelId = "intel-" + escapeHtml(d.id).replace(/:/g, "");
         const teamClass = !redBlueToggle.checked ? "" :
@@ -813,6 +856,7 @@
           <div class="device-actions">
             ${watchBtn}
             ${pullBtn}
+            ${relayBtn}
             <button type="button" class="dossierBtn" data-target="${dossierId}">TACTICAL DOSSIER</button>
             <button type="button" class="intelToggleBtn" data-target="${intelId}">INTEL PANEL</button>
           </div>
@@ -830,6 +874,14 @@
             body: JSON.stringify({ address: btn.dataset.id, action: "toggle" }),
           });
           await poll();
+        });
+      });
+      document.querySelectorAll(".relayBtn").forEach((btn) => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await loadScreenRelay(btn.dataset.id);
+          showToast("Screen relay theories loaded — consent-based paths only");
+          screenRelayPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
         });
       });
       document.querySelectorAll(".pullBtn").forEach((btn) => {
@@ -897,6 +949,7 @@
       renderDevices(data.devices ?? []);
       renderIntelOverview(data.devices ?? []);
       renderThreatBoard(data.devices ?? []);
+      loadScreenRelay();
       if (theoryCache) {
         theoryCache.securitySummary = theoryCache.securitySummary || {};
         const devs = data.devices ?? [];

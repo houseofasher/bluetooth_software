@@ -13,8 +13,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from ble_screen_relay import SCREEN_RELAY_THEORIES, recommend_relay_path
+
 FlawType = Literal["technical", "security", "privacy", "legal", "operational", "ethical"]
-Category = Literal["tactical", "passive", "gatt", "security", "privacy", "architecture", "operational"]
+Category = Literal["tactical", "passive", "gatt", "security", "privacy", "architecture", "operational", "screen_relay"]
 
 # Tactical sci-fi theories (ble_sci_fi.py)
 TACTICAL_THEORIES: list[dict[str, str]] = [
@@ -119,6 +121,7 @@ ALL_THEORIES: list[dict[str, str]] = (
     + GATT_THEORIES
     + SECURITY_THEORIES
     + ARCHITECTURE_THEORIES
+    + SCREEN_RELAY_THEORIES
 )
 
 THEORY_BY_ID: dict[str, dict[str, str]] = {t["id"]: t for t in ALL_THEORIES}
@@ -162,7 +165,9 @@ def theory_snapshot() -> dict[str, Any]:
         "gatt": GATT_THEORIES,
         "security": SECURITY_THEORIES,
         "architecture": ARCHITECTURE_THEORIES,
+        "screenRelay": SCREEN_RELAY_THEORIES,
         "all": ALL_THEORIES,
+        "screenRelayNote": "BLE finds devices; Wi‑Fi/USB/HDMI/AirPlay/scrcpy show screens — always with user consent.",
         "note": "Sci-fi labels map to honest BLE limits. Security flaws include privacy, legal, and ethical classes.",
     }
 
@@ -204,7 +209,7 @@ def theories_for_device(record: dict[str, Any]) -> list[dict[str, str]]:
         ids.append("naming_broadcast")
 
     if tier == "LOCKED":
-        ids.extend(["gatt_unauth_read", "mitm_gatt"])
+        ids.extend(["gatt_unauth_read", "mitm_gatt", "gatt_screen_blocked", "locked_phone_path", "ble_to_wifi_handoff"])
     elif tier in ("OPEN", "PARTIAL"):
         ids.extend(["atlas", "dossier_gatt"])
     if tier == "PASSIVE_ONLY":

@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from ble_device_naming import DeviceSignals, format_mac, normalize_mac
 from ble_sci_fi import SCI_FI, generate_mission_brief, build_cipher_zip
+from ble_screen_relay import recommend_relay_path
 
 MissionPhase = Literal["idle", "running", "resolving", "pulling", "completed", "failed"]
 ThreatTier = Literal["friendly", "known", "unknown", "priority", "breach"]
@@ -495,6 +496,7 @@ class TacticalEngine:
             "pullStatus": record.get("pullStatus"),
             "pulledIntel": record.get("pulledData"),
             "theories": record.get("theories") or [],
+            "screenRelay": recommend_relay_path(record),
             "firstSeenInMission": self.fingerprint_history.get(fp, {}).get("firstSeen"),
             "dossierNote": "Tactical intel card — MAC is hardware ID, not street address.",
         }
