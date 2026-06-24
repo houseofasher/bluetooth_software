@@ -30,7 +30,7 @@ from ble_location import SCANNER_LOCATION, reverse_geocode
 from ble_paired_windows import load_all_paired_names
 
 PORT = 8765
-SCAN_SECONDS = 20
+DISCOVER_ON_STOP_SEC = 3.0
 ZERO_RESULT_HINT = (
     "Scan finished with no advertisers. Check: Bluetooth ON, Windows Location ON, "
     "and at least one BLE device nearby and powered on (phone/watch/headphones)."
@@ -264,22 +264,18 @@ async def resolve_and_pull_phase() -> None:
     STATE.apply_resolved_records()
 
 
-async def run_scan(duration: float) -> None:
+async def run_scan() -> None:
     STATE.begin()
     scanner = BleakScanner(detection_callback=detection_callback, scanning_mode="active")
 
     try:
         await scanner.start()
-        deadline = time.monotonic() + max(duration - 5.0, 5.0)
-        while time.monotonic() < deadline:
-            if STATE.stop_flag.is_set():
-                break
+        while not STATE.stop_flag.is_set():
             await asyncio.sleep(0.2)
         await scanner.stop()
 
-        if not STATE.stop_flag.is_set():
-            await merge_discover_results(timeout=3.0)
-            await resolve_and_pull_phase()
+        await merge_discover_results(timeout=DISCOVER_ON_STOP_SEC)
+        await resolve_and_pull_phase()
     except BleakBluetoothNotAvailableError as exc:
         STATE.fail(reason_message(exc.reason))
         return
@@ -291,11 +287,11 @@ async def run_scan(duration: float) -> None:
             STATE.finish()
 
 
-def run_scan_in_thread(duration: float) -> None:
+def run_scan_in_thread() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(run_scan(duration))
+        loop.run_until_complete(run_scan())
     finally:
         loop.close()
 
@@ -561,7 +557,8 @@ HTML = """<!DOCTYPE html>
       hintEl.textContent = data.zeroResultHint ?? "";
 
       if (data.phase === "running") {
-        statusEl.textContent = `Scanning… ${data.count} device(s) seen`;
+        const elapsed = data.startedAt ? Math.floor(Date.now() / 1000 - data.startedAt) : 0;
+        statusEl.textContent = `Scanning… ${data.count} device(s) seen (${elapsed}s — click Stop when done)`;
         startBtn.disabled = true;
         stopBtn.disabled = false;
         return;
@@ -615,7 +612,9 @@ HTML = """<!DOCTYPE html>
         return;
       }
 
-      statusEl.textContent = `Scanning up to ${data.duration}s…`;
+      statusEl.textContent = data.continuous
+        ? "Scanning continuously — click Stop when done"
+        : `Scanning up to ${data.duration}s…`;
       stopBtn.disabled = false;
       pollTimer = setInterval(poll, 400);
       poll();
@@ -755,10 +754,9 @@ class Handler(BaseHTTPRequestHandler):
 
             threading.Thread(
                 target=run_scan_in_thread,
-                args=(SCAN_SECONDS,),
                 daemon=True,
             ).start()
-            self._send_json(200, {"ok": True, "duration": SCAN_SECONDS})
+            self._send_json(200, {"ok": True, "continuous": True})
             return
 
         self.send_error(404)

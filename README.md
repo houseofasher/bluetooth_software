@@ -21,7 +21,7 @@
 
 | | |
 |---|---|
-| **Scan model** | User clicks Start — no passive background enumeration |
+| **Scan model** | Start runs continuously until you click **Stop** — live device list updates while scanning |
 | **Naming** | Broadcast → paired registry → GATT → inference → MAC suffix |
 | **Stack** | Python · bleak · WinRT · optional TypeScript client |
 | **Privacy** | Runs on localhost; no cloud, no persistence, no tracking |
@@ -79,14 +79,18 @@ sequenceDiagram
 
     U->>UI: Start scan
     UI->>API: POST /api/scan
-    API->>S: Active scan ~17s (callbacks)
-    S-->>API: Advertisement packets
+    API->>S: Active scan (continuous)
+    loop Until user clicks Stop
+        S-->>API: Advertisement packets
+        UI->>API: Poll /api/devices
+        API-->>UI: Live device list
+    end
+    U->>UI: Stop scan
+    UI->>API: POST /api/stop
     API->>S: discover() backup 3s
-  API->>N: resolving phase
-    N->>N: Registry paired names
-    N->>N: GATT read (top 5 unresolved)
+    API->>N: resolving + GATT pull
     UI->>API: Poll /api/devices
-    API-->>UI: displayName + nameSource
+    API-->>UI: Final names + pulled data
     UI-->>U: Done
 ```
 
@@ -138,7 +142,7 @@ pip install -r requirements.txt
 python ble-scan-server.py
 ```
 
-Open **http://127.0.0.1:8765** → wait for the green health banner → click **Start scan**.
+Open **http://127.0.0.1:8765** → wait for the green health banner → click **Start scan** → let it run as long as you want → click **Stop** when finished (names and GATT data resolve after Stop).
 
 ### TypeScript client (optional)
 
@@ -150,10 +154,10 @@ const health = await client.checkHealth();
 if (!health.ready) throw new Error(health.message);
 
 const scan = await client.startScan({
-  onUpdate: (s) => console.log(s.phase, s.devices),
+  onUpdate: (s) => console.log(s.phase, s.count, s.devices),
 });
 
-await new Promise((r) => setTimeout(r, 20_000));
+// Scan runs until you call stop (no fixed timeout)
 await scan.stop();
 ```
 
@@ -219,8 +223,8 @@ bluetooth-scanning/
 | `GET` | `/` | Web dashboard |
 | `GET` | `/api/health` | Preflight Bluetooth radio check |
 | `GET` | `/api/devices` | Scan snapshot (`phase`, `devices`, `count`) |
-| `POST` | `/api/scan` | Start scan (503 if Bluetooth off) |
-| `POST` | `/api/stop` | Stop scan early |
+| `POST` | `/api/scan` | Start continuous scan (503 if Bluetooth off); returns `{ "continuous": true }` |
+| `POST` | `/api/stop` | Stop scan — triggers discover backup, name resolve, and GATT pull |
 | `GET` | `/api/hop/graph` | Domino hop graph (nodes, edges, chains) |
 | `POST` | `/api/hop/report` | Companion scanner submits observations |
 
@@ -243,8 +247,9 @@ bluetooth-scanning/
 | Phase | Meaning |
 |:---|:---|
 | `idle` | Ready for new scan |
-| `running` | Collecting advertisements |
-| `resolving` | GATT + final name merge |
+| `running` | Collecting advertisements (runs until Stop) |
+| `resolving` | Name merge after Stop |
+| `pulling` | GATT data pull after Stop |
 | `completed` | Results final |
 | `failed` | Bluetooth or scan error |
 
