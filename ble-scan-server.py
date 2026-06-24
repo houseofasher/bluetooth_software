@@ -534,13 +534,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
 
-        if path in ("/", "/ble-scan.html"):
+        if path in ("/", "/ble-scan.html", "/tactical_hud.html", "/index.html", "/hud"):
             body = HTML.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        if path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
             return
 
         if path in ("/relay", "/relay.html"):
@@ -899,7 +904,13 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     bind_host = "0.0.0.0" if BIND_ALL else "127.0.0.1"
-    server = ThreadingHTTPServer((bind_host, PORT), Handler)
+    try:
+        server = ThreadingHTTPServer((bind_host, PORT), Handler)
+    except OSError as exc:
+        print(f"FATAL: Cannot bind {bind_host}:{PORT} — {exc}")
+        print("Another copy may be running. PowerShell fix:")
+        print("  Get-NetTCPConnection -LocalPort 8765 | %% { Stop-Process -Id $_.OwningProcess -Force }")
+        raise SystemExit(1) from exc
     print(f"#houseofasher tactical BLE HUD: http://127.0.0.1:{PORT}/")
     print(f"Screen relay sender: http://127.0.0.1:{PORT}/relay")
     if BIND_ALL:
