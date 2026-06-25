@@ -17,7 +17,6 @@ import { HAND_CONNECTIONS, POSE_EDGE_GROUPS } from "../posesense/skeleton.js";
 import type { PersonDetection } from "../posesense/types.js";
 import { WiFiCsiEngine } from "../posesense/wifi-csi-engine.js";
 import { WiFiCsiSimulator } from "../posesense/wifi-csi-simulator.js";
-import { BLACK_MEAN_THRESHOLD, BROWSER_CAMERA_BLACK_THEORY, cameraTheoryChain } from "../posesense/camera-theory.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const UI_DIR = join(ROOT, "posesense");
@@ -31,15 +30,7 @@ const wifiSim = new WiFiCsiSimulator((f) => wifiEngine.ingest(f), true);
 
 let wallMode = true;
 let latestPersons: PersonDetection[] = [];
-let cameraMeta = {
-  status: "starting",
-  status_message: "Allow camera in browser",
-  width: 1280,
-  height: 720,
-  brightness: 0,
-  device_label: "",
-  device_id: "",
-};
+let cameraMeta = { status: "starting", status_message: "Allow camera in browser", width: 1280, height: 720, brightness: 0 };
 
 const clients = new Set<WebSocket>();
 
@@ -91,7 +82,6 @@ function buildPayload(): Record<string, unknown> {
     has_metrics: hasMetrics,
     wifi_occupied: Boolean(wifiState.occupied),
     through_wall: Boolean(wifiState.through_wall),
-    camera_black: cameraMeta.status === "black" || (cameraMeta.status === "live" && cameraMeta.brightness < BLACK_MEAN_THRESHOLD),
   });
 
   return {
@@ -101,10 +91,6 @@ function buildPayload(): Record<string, unknown> {
     narrative,
     wifi: { source: "sim", ...wifiState, through_wall_targets: throughWallTargets(wifiState) },
     camera: cameraMeta,
-    camera_theory: {
-      ...BROWSER_CAMERA_BLACK_THEORY,
-      chain: cameraTheoryChain(cameraMeta.brightness, cameraMeta.device_label || "unknown"),
-    },
     targets,
     pose_edge_groups: POSE_EDGE_GROUPS,
     hand_edges: HAND_CONNECTIONS,

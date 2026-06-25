@@ -1,7 +1,6 @@
 /** Narrative stages for PoseSense 2027 UI. */
 
 const STAGES = [
-  { id: "black_lens", index: -1, title: "Black Lens", icon: "🎥", story: "Wayne looked at the screen — the lens showed only darkness. Wrong sensor, another app holding the shutter, or the IR camera instead of color.", guidance: "Use the camera dropdown — pick USB FHD UVC. Close Zoom/Teams. Check privacy cover.", psychology: "Naming the failure (black lens) reduces frustration — one fix path, not mystery." },
   { id: "awaiting", index: 0, title: "Lab Ready", icon: "◌", story: "Wayne opened PoseSense. The room is quiet — waiting for a presence to enter the field.", guidance: "Step into the camera. The system will begin mapping when it sees you.", psychology: "Anticipation without anxiety: one clear next step lowers cognitive load." },
   { id: "presence", index: 1, title: "Presence Detected", icon: "◎", story: "Someone entered the lab. Motion registered — the sensors awaken.", guidance: "Hold still for a moment while the mesh finds your shoulders and hips.", psychology: "Immediate feedback confirms 'I am seen'." },
   { id: "mapping", index: 2, title: "Body Mapped", icon: "◈", story: "Dr. Emily moved through the room. PoseSense traced her full body with startling precision.", guidance: "Move naturally. Face the camera; show hands for finger tracking.", psychology: "Visual proof builds trust faster than numbers alone." },
@@ -21,18 +20,16 @@ export function resolveNarrative(opts: {
   has_metrics: boolean;
   wifi_occupied: boolean;
   through_wall: boolean;
-  camera_black?: boolean;
 }): Record<string, unknown> {
-  let stage: Stage = STAGES[1];
-  if (opts.camera_black) stage = STAGES[0];
-  else if (opts.through_wall) stage = STAGES[7];
-  else if (opts.person_count === 0 && opts.wifi_occupied) stage = STAGES[2];
-  else if (opts.person_count === 0) stage = STAGES[1];
-  else if (opts.person_count > 0 && !opts.has_metrics) stage = STAGES[2];
-  else if (opts.binding_count === 0 && opts.device_count === 0) stage = opts.has_metrics ? STAGES[3] : STAGES[2];
-  else if (opts.binding_count === 0 && opts.phone_nearby) stage = STAGES[5];
-  else if (opts.binding_count === 0 && opts.device_count > 0) stage = STAGES[4];
-  else stage = STAGES[6];
+  let stage: Stage = STAGES[0];
+  if (opts.through_wall) stage = STAGES[6];
+  else if (opts.person_count === 0 && opts.wifi_occupied) stage = STAGES[1];
+  else if (opts.person_count === 0) stage = STAGES[0];
+  else if (opts.person_count > 0 && !opts.has_metrics) stage = STAGES[1];
+  else if (opts.binding_count === 0 && opts.device_count === 0) stage = opts.has_metrics ? STAGES[2] : STAGES[1];
+  else if (opts.binding_count === 0 && opts.phone_nearby) stage = STAGES[4];
+  else if (opts.binding_count === 0 && opts.device_count > 0) stage = STAGES[3];
+  else stage = STAGES[5];
 
   return {
     stage: stage.id,
@@ -42,18 +39,10 @@ export function resolveNarrative(opts: {
     psychology: stage.psychology,
     icon: stage.icon,
     zones: {
-      perceive: {
-        label: "Perceive",
-        status: opts.camera_black ? "ready" : opts.person_count > 0 || opts.wifi_occupied ? "active" : "idle",
-        detail: opts.camera_black
-          ? `Camera dark · WiFi ${opts.wifi_occupied ? "active" : "idle"}`
-          : `${opts.person_count} camera · WiFi ${opts.wifi_occupied ? "active" : "idle"}`,
-      },
+      perceive: { label: "Perceive", status: opts.person_count > 0 || opts.wifi_occupied ? "active" : "idle", detail: `${opts.person_count} camera · WiFi ${opts.wifi_occupied ? "active" : "idle"}` },
       understand: { label: "Understand", status: opts.has_metrics || opts.through_wall ? "active" : "idle", detail: opts.through_wall ? "Through-wall motion" : opts.has_metrics ? "Body metrics" : "Building mesh" },
       connect: { label: "Connect", status: opts.binding_count > 0 ? "active" : opts.device_count > 0 ? "ready" : "idle", detail: opts.binding_count > 0 ? `${opts.binding_count} linked` : `${opts.device_count} BLE signals` },
     },
-    journey: STAGES.filter((s) => s.index >= 0 || s.id === stage.id).map((s) => ({
-      id: s.id, title: s.title, icon: s.icon, done: s.index >= 0 && s.index < stage.index, current: s.id === stage.id,
-    })),
+    journey: STAGES.map((s) => ({ id: s.id, title: s.title, icon: s.icon, done: s.index < stage.index, current: s.id === stage.id })),
   };
 }
