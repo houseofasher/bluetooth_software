@@ -25,7 +25,7 @@
       <h2 id="narrativeTitle"><span>◌</span> Lab Ready</h2>
       <p class="story" id="narrativeStory">Wayne opened PoseSense. Step into view — camera runs in your browser.</p>
       <p class="guidance" id="narrativeGuidance">Allow camera access when prompted.</p>
-      <p class="psychology" id="narrativePsych">Browser camera avoids Windows OpenCV black-screen issues.</p>
+      <p class="psychology" id="narrativePsych">Black lens theory: probe all cameras → pick brightest → full color feed.</p>
     </article>
     <div class="zones">
       <div class="zone" id="zonePerceive"><div class="zone-label">Perceive</div><div class="zone-detail">Waiting</div></div>
@@ -35,11 +35,15 @@
     <main class="layout">
       <section class="glass-panel">
         <div class="panel-head">Live Field · Browser Camera · Pose</div>
+        <div class="camera-row">
+          <label for="cameraSelect">Camera</label>
+          <select id="cameraSelect" aria-label="Select webcam"><option>Detecting…</option></select>
+          <span class="brightness-chip warn" id="brightnessChip" title="Frame brightness (0–255)">—/255</span>
+        </div>
         <div class="stage-wrap">
           <video id="webcam" autoplay playsinline muted></video>
           <canvas id="stageCanvas"></canvas>
-          <div class="camera-status" id="cameraStatus">Starting camera…</div>
-          <div class="stage-vignette"></div>
+          <div class="camera-status" id="cameraStatus">Probing cameras…</div>
         </div>
         <div class="bind-prompt" id="bindBar">Hold phone up to auto-link Bluetooth identity.</div>
         <div class="wall-toggle-row">

@@ -1207,6 +1207,17 @@
       "code": "ble-scan-server.Handler.do_POST",
       "module": "ble-scan-server.py",
       "feasibility": "planned"
+    },
+    {
+      "id": "browser_camera_black",
+      "category": "wifi_pose",
+      "narrative": "Wayne opened PoseSense — the lens showed only darkness",
+      "flaw": "Windows exposes IR + FHD UVC sensors; wrong device index yields black frames",
+      "flawType": "operational",
+      "fix": "Probe all videoinput devices; pick brightest stream; browser device picker",
+      "code": "camera-probe.probeCameras",
+      "module": "posesense/camera-probe.ts",
+      "feasibility": "high"
     }
   ]
 }
