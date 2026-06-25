@@ -21,6 +21,8 @@ COMPANY_NAMES: dict[int, str] = {
     0x012D: "OnePlus",
     0x02E5: "Fitbit",
     0x038F: "Tile",
+    0x05D6: "JLab",
+    0x05A7: "Samsung",  # LE Audio accessory prefix seen on Galaxy buds
 }
 
 APPLE_TYPES: dict[int, tuple[str, str, str]] = {
@@ -57,6 +59,10 @@ NAME_RULES: list[tuple[re.Pattern, str, str | None, str]] = [
     (re.compile(r"Garmin[\w\s]*", re.I), "Garmin", None, "watch"),
     (re.compile(r"WH-1000|WF-1000|LinkBuds", re.I), "Sony", None, "audio"),
     (re.compile(r"QuietComfort|Bose[\w\s]*", re.I), "Bose", None, "audio"),
+    (re.compile(r"JLab[\w\s+-]*", re.I), "JLab", None, "audio"),
+    (re.compile(r"GO\s*Pop|JBuds|Epic|Talk[\w\s+-]*", re.I), "JLab", None, "audio"),
+    (re.compile(r"Beats[\w\s]*", re.I), "Apple", "Beats", "audio"),
+    (re.compile(r"Powerbeats|Studio Buds", re.I), "Apple", "Beats", "audio"),
     (re.compile(r"Tile[\w\s]*", re.I), "Tile", "Tile", "tracker"),
     (re.compile(r"AirTag", re.I), "Apple", "AirTag", "tracker"),
 ]
@@ -97,11 +103,14 @@ def classify_device(
     manufacturer_data: dict[int, bytes] | None = None,
     service_uuids: list[str] | None = None,
     address: str = "",
+    paired_name: str | None = None,
 ) -> dict:
     """Return rich device identity: brand, model, category, likely body zone."""
     manufacturer_data = manufacturer_data or {}
     service_uuids = service_uuids or []
-    raw_name = name if name and name != "Unknown" else ""
+    raw_name = name if name and name not in ("Unknown", "Unknown device") else ""
+    if not raw_name and paired_name:
+        raw_name = paired_name
 
     brand: str | None = None
     model = raw_name or "Unknown device"
@@ -141,10 +150,36 @@ def classify_device(
                 confidence = max(confidence, 0.86)
                 is_phone = dtype in ("phone", "tablet")
             elif not raw_name:
-                model = "Apple device"
-                confidence = max(confidence, 0.55)
-                device_type = device_type if device_type != "unknown" else "phone"
-                is_phone = True
+                # Continuity / nearby — treat as phone when not audio/watch type byte
+                if data[0] in (0x05, 0x0C, 0x12):
+                    device_type = "audio"
+                    model = "AirPods / Beats"
+                    is_phone = False
+                elif data[0] == 0x10:
+                    device_type = "watch"
+                    model = "Apple Watch"
+                    is_phone = False
+                else:
+                    model = "iPhone (nearby)"
+                    device_type = "phone"
+                    is_phone = True
+                confidence = max(confidence, 0.68)
+
+        if cid == 0x05D6 and confidence < 0.85:  # JLab
+            brand = "JLab"
+            device_type = "audio"
+            is_phone = False
+            if not raw_name:
+                model = "JLab earbuds"
+            confidence = max(confidence, 0.88)
+
+        if cid == 0x05A7 and confidence < 0.75:  # Samsung LE accessory
+            brand = "Samsung"
+            if not raw_name:
+                model = "Galaxy Buds / Samsung audio"
+            device_type = "audio"
+            is_phone = False
+            confidence = max(confidence, 0.78)
 
         if cid == 0x0075 and confidence < 0.7:  # Samsung
             brand = "Samsung"
@@ -178,6 +213,13 @@ def classify_device(
 
     icon = CATEGORY_ICONS.get(device_type, "📡")
 
+    hints: list[str] = []
+    if paired_name and paired_name != raw_name:
+        hints.append("Windows paired name")
+    if not name or name in ("Unknown", "Unknown device"):
+        if brand == "Apple" and is_phone:
+            hints.append("Unlock iPhone to broadcast name, or link the strongest Apple signal")
+
     return {
         "brand": brand,
         "model": model,
@@ -193,4 +235,6 @@ def classify_device(
             "Identity from BLE advertisement name and manufacturer ID. "
             "Body placement refined by camera pose when linked to a person."
         ),
+        "scan_hints": hints,
+        "paired_name": paired_name,
     }

@@ -59,6 +59,34 @@ def _wrist_at_pocket(wrist: dict, hip: dict, shoulder: dict) -> bool:
     return abs(wrist["y"] - hip["y"]) < 0.12 and abs(wrist["x"] - hip["x"]) < 0.15 and wrist["y"] > shoulder["y"]
 
 
+def person_holding_phone(
+    pose: list[dict],
+    left_hand: list[dict],
+    right_hand: list[dict],
+) -> tuple[bool, str | None]:
+    """True when camera sees a hand likely holding a phone toward the lens."""
+    lw, rw = _kp(pose, L_WRIST), _kp(pose, R_WRIST)
+    le, re = _kp(pose, L_ELBOW), _kp(pose, R_ELBOW)
+    ls, rs = _kp(pose, L_SHOULDER), _kp(pose, R_SHOULDER)
+    nose = _kp(pose, NOSE)
+
+    def presenting(wrist: dict, elbow: dict, shoulder: dict, hand: list[dict]) -> bool:
+        if len(hand) > 8:
+            return True
+        if _wrist_raised(wrist, elbow, shoulder):
+            return True
+        # Phone held out toward camera — wrist between shoulders and nose height
+        if nose and wrist["y"] < shoulder["y"] + 0.18 and abs(wrist["x"] - shoulder["x"]) < 0.35:
+            return True
+        return False
+
+    if lw and le and ls and presenting(lw, le, ls, left_hand):
+        return True, "left"
+    if rw and re and rs and presenting(rw, re, rs, right_hand):
+        return True, "right"
+    return False, None
+
+
 def infer_placement(
     device_type: str,
     pose: list[dict],

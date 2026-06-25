@@ -279,8 +279,8 @@ function renderFrame() {
 
       if (tgt.device && tgt.placement?.anchor) {
         drawDeviceBadge(tgt.device, tgt.placement, rect);
-      } else {
-        const label = tgt.device?.display_name || tgt.ble_name || `Presence ${tgt.person_id}`;
+      } else if (tgt.device) {
+        const label = tgt.device.display_name || tgt.ble_name || `Presence ${tgt.person_id}`;
         ctx.font = "600 12px Instrument Sans, Segoe UI, sans-serif";
         const tw = ctx.measureText(label).width;
         ctx.fillStyle = bound ? "rgba(74,222,128,0.9)" : "rgba(34,211,238,0.85)";
@@ -288,6 +288,19 @@ function renderFrame() {
         ctx.fill();
         ctx.fillStyle = "#04050a";
         ctx.fillText(label, bx + 6, by - 7);
+      } else {
+        const label = `Presence ${tgt.person_id}`;
+        ctx.font = "600 12px Instrument Sans, Segoe UI, sans-serif";
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = sel ? "rgba(251,191,36,0.9)" : "rgba(34,211,238,0.85)";
+        roundRect(ctx, bx, by - 20, tw + 12, 18, 6);
+        ctx.fill();
+        ctx.fillStyle = "#04050a";
+        ctx.fillText(label, bx + 6, by - 7);
+      }
+
+      for (const comp of tgt.companion_devices || []) {
+        if (comp.placement?.anchor) drawDeviceBadge(comp, comp.placement, rect);
       }
 
       if (tgt.metrics?.measurements_ready) {
@@ -425,20 +438,47 @@ function renderUI() {
   const phones = data.unbound_devices.filter(d => d.is_phone).length + data.bindings.filter(b => b.is_phone).length;
   document.getElementById("phoneCount").textContent = phones;
   document.getElementById("countBadge").textContent = `${data.person_count} · ${data.device_count} signals`;
-  document.getElementById("trustBody").textContent = data.disclaimer || "";
+  document.getElementById("trustBody").textContent = [
+    data.disclaimer || "",
+    data.ble_scan?.tips?.length ? "\n\nTips: " + data.ble_scan.tips.join(" · ") : "",
+  ].join("");
+
+  const suggestions = data.bind_suggestions || [];
+  if (suggestions.length && data.person_count > 0 && !data.targets[0]?.ble_address) {
+    const top = suggestions[0];
+    bindBar.className = "bind-prompt active";
+    bindBar.innerHTML = `Camera sees you — likely device: <strong>${top.icon} ${top.display_name}</strong> (${top.rssi} dBm). `
+      + `<button type="button" class="suggest-bind-btn" data-addr="${top.address}">Link now</button> `
+      + `or pick from Radio Signatures below.`;
+    bindBar.querySelector(".suggest-bind-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      send({ action: "bind", person_id: data.targets[0].person_id, address: top.address });
+      bindBar.className = "bind-prompt";
+      bindBar.textContent = "Identity linked. Phone/device now tracked on your body.";
+    });
+  } else if (!selectedPersonId) {
+    bindBar.className = "bind-prompt";
+    bindBar.textContent = data.person_count
+      ? "Hold phone up in view to auto-link, or tap yourself on camera then a signal below."
+      : "Step into camera view. Unlock phone so Bluetooth broadcasts its name.";
+  }
 
   const identityCard = document.getElementById("identityCard");
   const t0 = data.targets[0];
   if (t0?.device && identityCard) {
     const d = t0.device;
     const p = t0.placement;
+    const companions = (t0.companion_devices || []).map(c =>
+      `<div class="id-row"><span class="id-key">${c.icon} Also</span><span class="id-val">${c.display_name} · ${c.placement?.label || c.likely_body_zone || ""}</span></div>`
+    ).join("");
     identityCard.innerHTML = `
       <div class="id-row"><span class="id-key">Brand</span><span class="id-val">${d.brand || "Unknown"}</span></div>
       <div class="id-row"><span class="id-key">Model</span><span class="id-val">${d.model || "—"}</span></div>
       <div class="id-row"><span class="id-key">Type</span><span class="id-val">${d.icon} ${d.device_type}</span></div>
       <div class="id-row"><span class="id-key">On body</span><span class="id-val highlight">${p?.label || d.likely_body_zone || "—"}</span></div>
       <div class="id-row"><span class="id-key">Side</span><span class="id-val">${p?.side || "—"}</span></div>
-      <div class="id-row"><span class="id-key">Confidence</span><span class="id-val">${Math.round((p?.confidence || d.confidence || 0) * 100)}%</span></div>`;
+      <div class="id-row"><span class="id-key">Link</span><span class="id-val">${t0.bind_method || "manual"}</span></div>
+      <div class="id-row"><span class="id-key">Confidence</span><span class="id-val">${Math.round((p?.confidence || d.confidence || 0) * 100)}%</span></div>${companions}`;
     identityCard.style.display = "block";
   } else if (identityCard) {
     identityCard.innerHTML = `<p class="id-empty">Link a device to see brand, model, and body placement.</p>`;
@@ -497,12 +537,16 @@ function renderUI() {
   }
   data.unbound_devices.forEach(d => {
     const li = document.createElement("li");
-    li.className = (d.address === selectedDeviceAddr ? "selected " : "") + (d.is_phone ? "phone" : "");
+    li.className = (d.address === selectedDeviceAddr ? "selected " : "")
+      + (d.is_phone ? "phone " : "")
+      + (d.suggested ? "suggested " : "")
+      + (d.device_type === "audio" ? "audio " : "");
     const tag = d.is_phone ? `<span class="tag tag-phone">Phone</span>` : `<span class="tag">${d.device_type}</span>`;
     const zone = d.placement_hint?.label || d.likely_body_zone || "Unknown zone";
+    const suggest = d.suggested ? `<div class="sub suggest-line">★ Likely yours — tap to link</div>` : "";
     li.innerHTML = `<strong>${d.icon} ${d.display_name || d.name}</strong>${tag}<span class="rssi">${d.rssi} dBm</span>
       <div class="sub">${d.brand || "Unknown brand"} · ${d.model || "—"}</div>
-      <div class="sub">Likely: ${zone} · ${Math.round(d.type_confidence * 100)}% ID</div>`;
+      <div class="sub">Likely: ${zone} · ${Math.round(d.type_confidence * 100)}% ID</div>${suggest}`;
     li.onclick = () => {
       if (selectedPersonId !== null) {
         send({ action: "bind", person_id: selectedPersonId, address: d.address });

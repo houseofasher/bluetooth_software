@@ -417,6 +417,14 @@ body {
 }
 .auto-chip.on { border-color: rgba(74, 222, 128, 0.5); color: var(--linked); background: rgba(74, 222, 128, 0.08); }
 
+.scroll-list li.suggested { border-color: rgba(251, 191, 36, 0.55); box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.15) inset; }
+.scroll-list li.audio { border-left: 3px solid rgba(167, 139, 250, 0.6); }
+.suggest-line { color: #fbbf24 !important; font-weight: 600; }
+.suggest-bind-btn {
+  margin-left: 0.35rem; padding: 0.2rem 0.55rem; border-radius: 6px; border: none;
+  background: rgba(74, 222, 128, 0.2); color: var(--linked); font-weight: 600; cursor: pointer; font-size: 0.72rem;
+}
+
 .trust-fold {
   margin-top: 0.85rem;
   border-radius: var(--radius-sm);

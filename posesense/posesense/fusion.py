@@ -6,7 +6,7 @@ import math
 import time
 from dataclasses import dataclass, field
 
-from .body_placement import BodyPlacement, infer_placement
+from .body_placement import BodyPlacement, infer_placement, person_holding_phone
 from .camera_tracker import PersonDetection
 from .motion_engine import RssiBuffer
 
@@ -60,6 +60,7 @@ class TrackedTarget:
     rssi: float | None
     bind_method: str
     metrics: dict
+    companion_devices: list[dict] = field(default_factory=list)
 
     # Back-compat accessors
     @property
@@ -85,6 +86,61 @@ class FusionEngine:
         self._prev_pose: dict[int, list[dict]] = {}
         self._prev_hands: dict[str, list[dict]] = {}
         self._history_len = 24
+        self._companion_bindings: dict[int, list[str]] = {}
+
+    def _phone_candidates(self, devices: list[BleDevice]) -> list[BleDevice]:
+        return [
+            d for d in devices
+            if d.is_phone or d.device_type in ("phone", "tablet")
+            or (d.brand == "Apple" and d.device_type != "audio" and d.device_type != "watch")
+        ]
+
+    def _audio_candidates(self, devices: list[BleDevice]) -> list[BleDevice]:
+        return [d for d in devices if d.device_type == "audio"]
+
+    def _try_hand_proximity_bind(self, persons: list[PersonDetection], unbound_d: list[BleDevice]) -> None:
+        """When camera sees phone-in-hand, bind strongest nearby phone signal."""
+        bound = set(self.bindings.values())
+        unbound_p = [p for p in persons if p.person_id not in self.bindings]
+        if not unbound_p or not unbound_d:
+            return
+
+        for person in unbound_p:
+            holding, _side = person_holding_phone(person.pose, person.left_hand, person.right_hand)
+            if not holding:
+                continue
+
+            phones = self._phone_candidates(unbound_d)
+            if not phones:
+                phones = [d for d in unbound_d if d.brand == "Apple"]
+            if not phones:
+                continue
+
+            best = max(phones, key=lambda d: d.rssi)
+            if best.rssi >= -92:
+                self.bindings[person.person_id] = best.address
+                self.bind_methods[person.person_id] = "auto-hand-proximity"
+                bound.add(best.address)
+                unbound_d = [d for d in unbound_d if d.address not in bound]
+                break
+
+    def _try_audio_companion_bind(self, persons: list[PersonDetection], unbound_d: list[BleDevice]) -> None:
+        """Attach nearby headphones to person already holding / using phone."""
+        audio = self._audio_candidates(unbound_d)
+        if not audio:
+            return
+
+        for person in persons:
+            pid = person.person_id
+            if pid not in self.bindings:
+                continue
+            companions = self._companion_bindings.setdefault(pid, [])
+            for dev in sorted(audio, key=lambda d: -d.rssi):
+                if dev.address in companions or dev.rssi < -94:
+                    continue
+                companions.append(dev.address)
+                if len(companions) >= 2:
+                    break
 
     def ingest_ble(self, address: str, name: str, rssi: float, ts: float, meta: dict | None = None) -> None:
         meta = meta or {}
@@ -173,25 +229,62 @@ class FusionEngine:
             "method": p.method,
         }
 
+    def unbind(self, person_id: int) -> None:
+        self.bindings.pop(person_id, None)
+        self.bind_methods.pop(person_id, None)
+        self._companion_bindings.pop(person_id, None)
+
+    def _device_priority(self, dev: BleDevice) -> tuple:
+        return (
+            int(dev.is_phone or dev.device_type == "audio"),
+            dev.type_confidence,
+            dev.rssi,
+        )
+
     def _try_auto_bind(self, persons: list[PersonDetection]) -> None:
         bound = set(self.bindings.values())
         unbound_p = [p for p in persons if p.person_id not in self.bindings]
-        unbound_d = [d for d in self.devices.values() if d.address not in bound and time.time() - d.last_seen < 6]
+        unbound_d = [
+            d for d in self.devices.values()
+            if d.address not in bound and time.time() - d.last_seen < 20
+        ]
         if not unbound_p or not unbound_d:
+            self._try_audio_companion_bind(persons, unbound_d)
             return
 
-        phones = [d for d in unbound_d if d.is_phone]
+        self._try_hand_proximity_bind(persons, unbound_d)
+        bound = set(self.bindings.values())
+        unbound_p = [p for p in persons if p.person_id not in self.bindings]
+        unbound_d = [
+            d for d in self.devices.values()
+            if d.address not in bound and time.time() - d.last_seen < 20
+        ]
+        if not unbound_p or not unbound_d:
+            self._try_audio_companion_bind(persons, unbound_d)
+            return
+
+        phones = self._phone_candidates(unbound_d)
         if len(unbound_p) == 1 and len(phones) == 1:
             self.bindings[unbound_p[0].person_id] = phones[0].address
             self.bind_methods[unbound_p[0].person_id] = "auto-phone"
+            self._try_audio_companion_bind(persons, unbound_d)
             return
 
         if len(unbound_p) == 1 and len(unbound_d) == 1:
             self.bindings[unbound_p[0].person_id] = unbound_d[0].address
             self.bind_methods[unbound_p[0].person_id] = "auto"
+            self._try_audio_companion_bind(persons, unbound_d)
             return
 
-        best_score, best_pair = 0.42, None
+        if len(unbound_p) == 1 and phones:
+            best_phone = max(phones, key=lambda d: d.rssi)
+            if best_phone.rssi >= -88 and len(phones) <= 8:
+                self.bindings[unbound_p[0].person_id] = best_phone.address
+                self.bind_methods[unbound_p[0].person_id] = "auto-strongest-phone"
+                self._try_audio_companion_bind(persons, unbound_d)
+                return
+
+        best_score, best_pair = 0.32, None
         for person in unbound_p:
             for dev in unbound_d:
                 self._record_motion(person.person_id, person.motion_energy, dev.address, dev.motion_energy)
@@ -199,8 +292,10 @@ class FusionEngine:
                     self._person_motion_history.get(person.person_id, []),
                     self._device_motion_history.get(dev.address, []),
                 )
-                if dev.is_phone:
-                    score += 0.12
+                if dev.is_phone or dev.device_type == "phone":
+                    score += 0.15
+                if dev.rssi >= -75:
+                    score += 0.08
                 if score > best_score:
                     best_score, best_pair = score, (person.person_id, dev.address)
 
@@ -208,6 +303,8 @@ class FusionEngine:
             pid, addr = best_pair
             self.bindings[pid] = addr
             self.bind_methods[pid] = "auto-phone" if self.devices[addr].is_phone else "auto"
+
+        self._try_audio_companion_bind(persons, unbound_d)
 
     def update(self, persons: list[PersonDetection]) -> list[TrackedTarget]:
         self._try_auto_bind(persons)
@@ -226,6 +323,17 @@ class FusionEngine:
                 device_info["address"] = dev.address
                 device_info["rssi"] = dev.rssi
                 placement_info = self._placement_dict(placement)
+
+            companion_devices = []
+            for addr in self._companion_bindings.get(person.person_id, []):
+                cdev = self.devices.get(addr)
+                if not cdev or time.time() - cdev.last_seen > 20:
+                    continue
+                c_payload = cdev.identity_dict()
+                c_payload["address"] = cdev.address
+                c_payload["rssi"] = cdev.rssi
+                c_payload["placement"] = self._placement_dict(self._placement_for(person, cdev))
+                companion_devices.append(c_payload)
 
             targets.append(TrackedTarget(
                 person_id=person.person_id,
@@ -250,6 +358,7 @@ class FusionEngine:
                     "measurements_ready": m.measurements_ready,
                     "visibility_message": m.visibility_message,
                 },
+                companion_devices=companion_devices,
             ))
         return targets
 
@@ -278,14 +387,63 @@ class FusionEngine:
 
     def unbound_devices(self, persons: list[PersonDetection] | None = None) -> list[dict]:
         bound = set(self.bindings.values())
+        for addrs in self._companion_bindings.values():
+            bound.update(addrs)
         now = time.time()
         primary = persons[0] if persons else None
         result = []
-        for dev in sorted(self.devices.values(), key=lambda d: (-int(d.is_phone), -d.rssi)):
-            if dev.address in bound or now - dev.last_seen > 12:
+        for dev in sorted(self.devices.values(), key=lambda d: self._device_priority(d), reverse=True):
+            if dev.address in bound or now - dev.last_seen > 25:
                 continue
-            result.append(self._device_payload(dev, primary))
-        return result
+            payload = self._device_payload(dev, primary)
+            payload["suggested"] = self._is_suggested(dev, persons)
+            result.append(payload)
+        return result[:40]
+
+    def _is_suggested(self, dev: BleDevice, persons: list[PersonDetection] | None) -> bool:
+        if not persons:
+            return dev.is_phone or dev.device_type == "audio"
+        person = persons[0]
+        holding, _ = person_holding_phone(person.pose, person.left_hand, person.right_hand)
+        if holding and (dev.is_phone or dev.brand == "Apple"):
+            return dev.rssi >= max(-92, max((d.rssi for d in self._phone_candidates(list(self.devices.values()))), default=-999) - 3)
+        if dev.device_type == "audio" and dev.rssi >= -93:
+            return True
+        return False
+
+    def bind_suggestions(self, persons: list[PersonDetection]) -> list[dict]:
+        if not persons:
+            return []
+        person = persons[0]
+        if person.person_id in self.bindings:
+            return []
+        holding, side = person_holding_phone(person.pose, person.left_hand, person.right_hand)
+        bound = set(self.bindings.values())
+        candidates = [
+            d for d in self.devices.values()
+            if d.address not in bound and time.time() - d.last_seen < 20
+        ]
+        phones = self._phone_candidates(candidates)
+        picks = phones if phones else candidates
+        picks = sorted(picks, key=lambda d: self._device_priority(d), reverse=True)[:3]
+        out = []
+        for dev in picks:
+            out.append({
+                "address": dev.address,
+                "display_name": dev.display_name,
+                "brand": dev.brand,
+                "device_type": dev.device_type,
+                "icon": dev.icon,
+                "rssi": dev.rssi,
+                "reason": (
+                    f"Camera sees phone in {side} hand — strongest match"
+                    if holding and dev in phones
+                    else "Strongest phone signal nearby"
+                    if dev.is_phone
+                    else "Strongest BLE signal nearby"
+                ),
+            })
+        return out
 
     def bound_summary(self) -> list[dict]:
         items = []

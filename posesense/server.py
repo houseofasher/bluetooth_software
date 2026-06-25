@@ -38,6 +38,7 @@ _command_queue: asyncio.Queue[dict] = asyncio.Queue()
 wall_mode = True
 wifi_source_name = "sim"
 _wifi_source = None
+_ble_source = None
 
 
 def on_ble_device(address: str, name: str, rssi: float, ts: float, meta: dict) -> None:
@@ -109,6 +110,7 @@ async def broadcast_loop(ble_mode: str) -> None:
         has_hands = any(t.left_hand or t.right_hand for t in targets) if targets else False
         unbound = fusion.unbound_devices(persons)
         phone_nearby = any(d.get("is_phone") for d in unbound)
+        bind_suggestions = fusion.bind_suggestions(persons)
 
         narrative = resolve_narrative(
             person_count=camera_count,
@@ -167,6 +169,7 @@ async def broadcast_loop(ble_mode: str) -> None:
                     "rssi": t.rssi,
                     "bind_method": t.bind_method,
                     "metrics": t.metrics,
+                    "companion_devices": getattr(t, "companion_devices", []),
                 }
                 for t in targets
             ],
@@ -175,6 +178,16 @@ async def broadcast_loop(ble_mode: str) -> None:
             ],
             "hand_edges": HAND_CONNECTIONS,
             "unbound_devices": unbound,
+            "bind_suggestions": bind_suggestions,
+            "ble_scan": {
+                "paired_devices": getattr(_ble_source, "paired_device_count", 0) if _ble_source else 0,
+                "advertisements_seen": getattr(_ble_source, "advertisement_count", 0) if _ble_source else 0,
+                "tips": [
+                    "Unlock your phone — iPhones hide their name when locked",
+                    "Hold phone up in view — camera auto-links strongest Apple/phone signal",
+                    "Headphones appear under Radio Signatures — link or wait for auto-detect",
+                ],
+            },
             "bindings": fusion.bound_summary(),
             "person_count": camera_count,
             "device_count": len(fusion.devices),
@@ -223,7 +236,7 @@ async def main(
     camera_index: int,
     wifi_mode: str,
 ) -> None:
-    global wifi_source_name, _wifi_source
+    global wifi_source_name, _wifi_source, _ble_source
 
     camera.camera_index = camera_index
     camera.start()
@@ -232,6 +245,8 @@ async def main(
         ble_source = MotionSimulator(on_sim_rssi)
     else:
         ble_source = BleCollector(on_ble_device, name_filter=name_filter)
+
+    _ble_source = ble_source
 
     wifi_source_name = wifi_mode
     if wifi_mode == "sim":
