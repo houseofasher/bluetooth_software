@@ -35,11 +35,14 @@
     <main class="layout">
       <section class="glass-panel">
         <div class="panel-head">Live Field · Browser Camera · Pose</div>
+        <div class="camera-row">
+          <label for="cameraSelect">Camera</label>
+          <select id="cameraSelect" aria-label="Select webcam"><option>Starting…</option></select>
+        </div>
         <div class="stage-wrap">
-          <video id="webcam" playsinline muted style="display:none"></video>
+          <video id="webcam" autoplay playsinline muted></video>
           <canvas id="stageCanvas"></canvas>
           <div class="camera-status" id="cameraStatus">Starting camera…</div>
-          <div class="stage-vignette"></div>
         </div>
         <div class="bind-prompt" id="bindBar">Hold phone up to auto-link Bluetooth identity.</div>
         <div class="wall-toggle-row">
