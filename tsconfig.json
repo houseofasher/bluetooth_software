@@ -8,7 +8,7 @@
     "noEmit": true,
     "resolveJsonModule": true,
     "types": ["node"],
-    "lib": ["ES2022"]
+    "lib": ["ES2022", "DOM"]
   },
-  "include": ["*.ts", "src/**/*.ts", "scripts/**/*.mjs"]
+  "include": ["*.ts", "src/**/*.ts", "scripts/**/*.mjs", "posesense-app.ts"]
 }

@@ -251,13 +251,20 @@ Mission brief (`GET /api/brief`) includes a **Security & ethics** section with l
 
 ### PoseSense · WiFi body pose — Wayne / Dr. Emily
 
-**Live implementation:** [`posesense/`](posesense/) — Python FastAPI server with camera pose, BLE identity fusion, WiFi CSI through-wall sensing, and the 2027 narrative dashboard (`http://127.0.0.1:8766`).
+**Live implementation:** [`posesense/`](posesense/) — **100% TypeScript**. Browser camera + Node BLE fusion + WiFi CSI. Dashboard: **http://127.0.0.1:8766**
 
 ```bash
-cd posesense
-pip install -r requirements.txt
-python server.py --mode ble --camera 0 --wifi sim
+npm install && npm run build && npm start
 ```
+
+Allow camera in the browser when prompted (fixes Windows OpenCV black-screen issues).
+
+| Component | Stack |
+|-----------|--------|
+| Camera + pose | Browser MediaPipe (`posesense-app.ts`) |
+| BLE | Node `@stoprocent/noble` |
+| Fusion + WiFi CSI | `src/posesense/*.ts` |
+| Live sync | WebSocket `/ws` on port 8766 |
 
 **Narrative:** Carnegie Mellon University research showed **WiFi CSI** can reconstruct **full body pose** as someone moves in a room. Wayne's PoseSense idea: fuse that with BLE so you see **movement and identity** — who is where.
 
@@ -269,7 +276,7 @@ python server.py --mode ble --camera 0 --wifi sim
 | Identity + pose | WiFi pose is anonymous | Click-to-bind BLE device to camera presence |
 | Dr. Emily demo | Needs lab + consent | Ethical gate — cooperative subject only |
 
-`GET /api/wifi/pose` — TypeScript theory catalog + fusion spec. HUD **PoseSense** panel. **Live stack:** `posesense/server.py`.
+`GET /api/wifi/pose` — theory catalog. **Live PoseSense:** WebSocket on **8766** (`src/server/posesense-server.ts`).
 
 ### Screen relay theories (`ble_screen_relay.py`) — 20 chains
 

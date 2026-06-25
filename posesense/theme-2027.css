@@ -425,6 +425,17 @@ body {
   background: rgba(74, 222, 128, 0.2); color: var(--linked); font-weight: 600; cursor: pointer; font-size: 0.72rem;
 }
 
+.stage-wrap { position: relative; }
+.camera-status {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  max-width: 85%; padding: 0.75rem 1rem; border-radius: var(--radius-sm);
+  background: rgba(8, 10, 18, 0.88); border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #fbbf24; font-size: 0.78rem; line-height: 1.45; text-align: center;
+  pointer-events: none; z-index: 3; display: none;
+}
+.camera-status.show { display: block; }
+.camera-status.ok { display: none; }
+
 .trust-fold {
   margin-top: 0.85rem;
   border-radius: var(--radius-sm);

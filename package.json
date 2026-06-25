@@ -8,15 +8,19 @@
     "start": "tsx src/server/index.ts",
     "hop": "tsx src/cli/hop-reporter.ts",
     "build:ui": "esbuild tactical-hud.ts --bundle --outfile=dist/tactical-hud.js --format=iife --target=es2020 && esbuild screen-relay.ts --bundle --outfile=dist/screen-relay.js --format=iife --target=es2020",
-    "build": "npm run build:ui",
+    "build:posesense": "esbuild posesense-app.ts --bundle --outfile=dist/posesense.js --format=esm --platform=browser --target=es2020",
+    "build": "npm run build:ui && npm run build:posesense",
     "typecheck": "tsc --noEmit",
     "extract:theories": "node scripts/extract-py-arrays.mjs"
   },
   "dependencies": {
-    "@stoprocent/noble": "^2.5.5"
+    "@mediapipe/tasks-vision": "^0.10.21",
+    "@stoprocent/noble": "^2.5.5",
+    "ws": "^8.18.1"
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.25.0",
     "tsx": "^4.22.4",
     "typescript": "^5.8.2"

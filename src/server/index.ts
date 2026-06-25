@@ -2,6 +2,7 @@
 /** #houseofasher tactical BLE server — TypeScript / Node.js */
 
 import { BIND_ALL, PORT, createBleServer } from "./http-server.js";
+import { startPoseSenseHub, stopPoseSenseHub } from "./posesense-server.js";
 import { checkBluetoothReady, ensureScanLoop } from "./scanner.js";
 import { HOP_INGEST_INTERVAL, STATE } from "./scan-state.js";
 import { lanIp } from "../ble/frame-store.js";
@@ -16,6 +17,9 @@ async function main(): Promise<void> {
   });
 
   console.log(`#houseofasher tactical BLE HUD: http://127.0.0.1:${PORT}/`);
+
+  await startPoseSenseHub();
+
   console.log(`Screen relay sender: http://127.0.0.1:${PORT}/relay`);
   if (BIND_ALL) {
     console.log(`LAN relay (phone): http://${lanIp()}:${PORT}/relay  [BLE_BIND_ALL=1]`);
@@ -36,6 +40,7 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => {
     console.log("\nStopping…");
     STATE.scanShutdown = true;
+    stopPoseSenseHub();
     server.close();
     process.exit(0);
   });
