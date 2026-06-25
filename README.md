@@ -249,19 +249,27 @@ Each device record includes `theories[]` — applicable chains for that contact 
 
 Mission brief (`GET /api/brief`) includes a **Security & ethics** section with live counts (GATT locked, serials read, health reads).
 
-### PoseSense · WiFi body pose (`ble_wifi_pose.py`) — Wayne / Dr. Emily
+### PoseSense · WiFi body pose — Wayne / Dr. Emily
+
+**Live implementation:** [`posesense/`](posesense/) — Python FastAPI server with camera pose, BLE identity fusion, WiFi CSI through-wall sensing, and the 2027 narrative dashboard (`http://127.0.0.1:8766`).
+
+```bash
+cd posesense
+pip install -r requirements.txt
+python server.py --mode ble --camera 0 --wifi sim
+```
 
 **Narrative:** Carnegie Mellon University research showed **WiFi CSI** can reconstruct **full body pose** as someone moves in a room. Wayne's PoseSense idea: fuse that with BLE so you see **movement and identity** — who is where.
 
 | Theory | Flaw | Fix in this repo |
 |:---|:---|:---|
 | PoseSense vision | BLE has no skeleton | WiFi CSI node + BLE fingerprint fusion |
-| CMU WiFi pose | Commodity WiFi hides CSI | Cooperative ESP32 / research NIC → `POST /api/wifi/pose` |
-| Identity + pose | WiFi pose is anonymous | `recommend_pose_fusion()` + hop custody |
+| CMU WiFi pose | Commodity WiFi hides CSI | Cooperative ESP32 / research NIC → `--wifi esp32` |
+| Through-wall | Camera is line-of-sight only | WiFi CSI ghost overlay when wall mode is on |
+| Identity + pose | WiFi pose is anonymous | Click-to-bind BLE device to camera presence |
 | Dr. Emily demo | Needs lab + consent | Ethical gate — cooperative subject only |
-| Until CSI online | No pose hardware yet | `tomography_grid` + `ghost_trail` as honest proxy |
 
-`GET /api/wifi/pose` — story, CMU notes, fusion steps. HUD **PoseSense** panel.
+`GET /api/wifi/pose` — TypeScript theory catalog + fusion spec. HUD **PoseSense** panel. **Live stack:** `posesense/server.py`.
 
 ### Screen relay theories (`ble_screen_relay.py`) — 20 chains
 
