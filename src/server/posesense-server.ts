@@ -141,10 +141,14 @@ export function createPoseSenseServer() {
     if (req.method === "GET" && url === "/theme-2027.css") {
       if (readStatic("theme-2027.css", res, "text/css; charset=utf-8")) return;
     }
-    if (req.method === "GET" && url === "/posesense.js") {
+    if (req.method === "GET" && (url === "/posesense.js" || url.startsWith("/posesense.js?"))) {
       try {
         const body = readFileSync(join(DIST, "posesense.js"));
-        res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Content-Length": body.length });
+        res.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Content-Length": body.length,
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+        });
         res.end(body);
         return;
       } catch { /* fallthrough */ }

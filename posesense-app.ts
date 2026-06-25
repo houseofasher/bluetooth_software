@@ -3,11 +3,15 @@
  */
 
 import {
-  FaceLandmarker,
   FilesetResolver,
-  HandLandmarker,
   PoseLandmarker,
 } from "@mediapipe/tasks-vision";
+
+import {
+  listCameras,
+  openCameraDevice,
+  pickWorkingCamera,
+} from "./camera-utils.js";
 
 const canvas = document.getElementById("stageCanvas") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d", { alpha: true })!;
@@ -15,6 +19,9 @@ const video = document.getElementById("webcam") as HTMLVideoElement;
 const bindBar = document.getElementById("bindBar")!;
 const cameraStatus = document.getElementById("cameraStatus")!;
 const cameraSelect = document.getElementById("cameraSelect") as HTMLSelectElement | null;
+const cameraHint = document.getElementById("cameraHint")!;
+
+const scratch = document.createElement("canvas");
 
 let ws: WebSocket | null = null;
 let latestData: Record<string, unknown> | null = null;
@@ -25,7 +32,7 @@ let wallModeEnabled = true;
 let localPersons: Array<Record<string, unknown>> = [];
 let currentStream: MediaStream | null = null;
 let activeDeviceId = "";
-let mediaPipeReady = false;
+let activeLabel = "";
 
 const SKEL: Record<string, string> = {
   torso: "#818cf8", left_arm: "#34d399", right_arm: "#fbbf24",
@@ -41,7 +48,7 @@ function el(id: string) { return document.getElementById(id)!; }
 
 function stageSize() {
   const rect = canvas.parentElement!.getBoundingClientRect();
-  return { w: rect.width, h: rect.height };
+  return { w: Math.max(1, rect.width), h: Math.max(1, rect.height) };
 }
 
 function resizeCanvas() {
@@ -68,8 +75,11 @@ function bboxFromPose(pts: Array<{ x: number; y: number; confidence?: number }>)
   return { x, y, w: Math.min(1, Math.max(...xs) + pad) - x, h: Math.min(1, Math.max(...ys) + pad) - y };
 }
 
-/** Skeleton overlay only — video renders natively underneath. */
-function drawOverlay(targets: Array<Record<string, unknown>>) {
+function setCameraHint(text: string) {
+  cameraHint.textContent = text;
+}
+
+function drawSkeleton(targets: Array<Record<string, unknown>>) {
   const { w, h } = stageSize();
   ctx.clearRect(0, 0, w, h);
 
@@ -160,85 +170,55 @@ function connect() {
   };
 }
 
-async function openStream(deviceId?: string) {
-  currentStream?.getTracks().forEach((t) => t.stop());
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: deviceId
-      ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-      : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
-    audio: false,
-  });
-  currentStream = stream;
-  video.srcObject = stream;
-  video.setAttribute("playsinline", "true");
-  await video.play();
-  activeDeviceId = deviceId ?? stream.getVideoTracks()[0]?.getSettings().deviceId ?? "";
-  cameraStatus.className = "camera-status ok";
-}
-
-async function fillCameraSelect() {
+async function fillCameraSelect(selectedId: string) {
   if (!cameraSelect) return;
-  const devices = (await navigator.mediaDevices.enumerateDevices())
-    .filter((d) => d.kind === "videoinput" && d.deviceId);
+  const devices = await listCameras();
   cameraSelect.innerHTML = devices
     .map((d, i) => {
-      const label = d.label?.trim() || `Camera ${i + 1}`;
-      return `<option value="${d.deviceId}" ${d.deviceId === activeDeviceId ? "selected" : ""}>${label}</option>`;
+      const label = d.label || `Camera ${i + 1}`;
+      return `<option value="${d.deviceId}" ${d.deviceId === selectedId ? "selected" : ""}>${label}</option>`;
     })
     .join("");
   cameraSelect.disabled = devices.length <= 1;
+}
+
+async function attachCamera(deviceId: string, label: string) {
+  currentStream?.getTracks().forEach((t) => t.stop());
+  currentStream = await openCameraDevice(deviceId, video);
+  activeDeviceId = deviceId;
+  activeLabel = label;
+  cameraStatus.className = "camera-status ok";
+  setCameraHint(`${label} · ${video.videoWidth || "?"}×${video.videoHeight || "?"}`);
+  if (cameraSelect) cameraSelect.value = deviceId;
 }
 
 async function loadMediaPipe() {
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm",
   );
-  const opts = (path: string, delegate: "GPU" | "CPU") => ({
-    baseOptions: { modelAssetPath: path, delegate },
+  const model = (path: string) => ({
+    baseOptions: { modelAssetPath: path, delegate: "CPU" as const },
     runningMode: "VIDEO" as const,
   });
 
-  let delegate: "GPU" | "CPU" = "GPU";
-  try {
-    await PoseLandmarker.createFromOptions(vision, { ...opts(
-      "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
-      "GPU",
-    ), numPoses: 2 });
-  } catch {
-    delegate = "CPU";
-  }
-
   const poseLm = await PoseLandmarker.createFromOptions(vision, {
-    ...opts("https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task", delegate),
+    ...model("https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"),
     numPoses: 2,
   });
-  const handLm = await HandLandmarker.createFromOptions(vision, {
-    ...opts("https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task", delegate),
-    numHands: 4,
-  });
-  const faceLm = await FaceLandmarker.createFromOptions(vision, {
-    ...opts("https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task", delegate),
-    numFaces: 2,
-  });
 
-  mediaPipeReady = true;
   let ts = 0;
-
-  const detect = () => {
+  return () => {
     if (video.readyState < 2) return;
     ts += 33;
     const poseRes = poseLm.detectForVideo(video, ts);
-    const handRes = handLm.detectForVideo(video, ts);
-    const faceRes = faceLm.detectForVideo(video, ts);
-
     localPersons = (poseRes.landmarks ?? []).map((plm, i) => {
       const pose = plm.map((p, idx) => lm(p, String(idx)));
       return {
         person_id: i + 1,
         pose,
-        face: faceRes.faceLandmarks?.[i]?.map((p) => lm(p)) ?? [],
-        left_hand: handRes.landmarks?.[0]?.map((p) => lm(p)) ?? [],
-        right_hand: handRes.landmarks?.[1]?.map((p) => lm(p)) ?? [],
+        face: [],
+        left_hand: [],
+        right_hand: [],
         bbox: bboxFromPose(pose),
         motion_energy: 0.2,
         metrics: {
@@ -254,34 +234,46 @@ async function loadMediaPipe() {
       persons: localPersons,
       camera: {
         status: "live",
-        status_message: "Browser camera live",
+        status_message: activeLabel,
         width: video.videoWidth,
         height: video.videoHeight,
         brightness: 128,
+        device_label: activeLabel,
+        device_id: activeDeviceId,
       },
     });
   };
-
-  return detect;
 }
 
 async function startCamera() {
-  await openStream();
-  await fillCameraSelect();
+  cameraStatus.className = "camera-status show";
+  cameraStatus.textContent = "Finding camera…";
+
+  const picked = await pickWorkingCamera(video, scratch);
+  currentStream = picked.stream;
+  activeDeviceId = picked.deviceId;
+  activeLabel = picked.label;
+
+  await fillCameraSelect(activeDeviceId);
+  cameraStatus.className = "camera-status ok";
+  setCameraHint(`${picked.label} · ${video.videoWidth}×${video.videoHeight}`);
+
+  if (picked.luma < 8) {
+    cameraStatus.className = "camera-status show";
+    cameraStatus.textContent =
+      "Feed still dark — use the Camera dropdown and pick USB FHD UVC (not IR). Close Zoom/Teams if open.";
+  }
 
   let detect: (() => void) | null = null;
   loadMediaPipe()
     .then((fn) => { detect = fn; })
-    .catch((e) => {
-      cameraStatus.className = "camera-status show";
-      cameraStatus.textContent = `Pose tracking unavailable: ${e instanceof Error ? e.message : String(e)}. Camera feed still live.`;
-    });
+    .catch(() => { /* camera works without pose */ });
 
   const loop = () => {
     resizeCanvas();
     if (video.readyState >= 2 && video.videoWidth > 0) {
       detect?.();
-      drawOverlay(latestTargets.length ? latestTargets : localPersons);
+      drawSkeleton(latestTargets.length ? latestTargets : localPersons);
     }
     requestAnimationFrame(loop);
   };
@@ -290,13 +282,13 @@ async function startCamera() {
 
 if (cameraSelect) {
   cameraSelect.addEventListener("change", async () => {
-    const id = cameraSelect.value;
-    if (!id || id === activeDeviceId) return;
+    const opt = cameraSelect.selectedOptions[0];
+    if (!opt?.value || opt.value === activeDeviceId) return;
     try {
-      await openStream(id);
+      await attachCamera(opt.value, opt.textContent ?? "Camera");
     } catch (e) {
       cameraStatus.className = "camera-status show";
-      cameraStatus.textContent = `Camera switch failed: ${e instanceof Error ? e.message : String(e)}`;
+      cameraStatus.textContent = `Switch failed: ${e instanceof Error ? e.message : String(e)}`;
     }
   });
 }
@@ -310,5 +302,5 @@ el("wallModeBtn").addEventListener("click", () => {
 connect();
 startCamera().catch((e) => {
   cameraStatus.className = "camera-status show";
-  cameraStatus.textContent = `Camera blocked: ${e instanceof Error ? e.message : String(e)}. Allow camera in browser settings.`;
+  cameraStatus.textContent = `Camera blocked: ${e instanceof Error ? e.message : String(e)}. Allow camera in browser settings for this site.`;
 });

@@ -253,26 +253,75 @@ body {
   font-weight: 600;
 }
 
+.camera-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.65rem;
+  flex-wrap: wrap;
+}
+.camera-row label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.camera-row select {
+  flex: 1;
+  min-width: 180px;
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border);
+  background: rgba(8, 10, 18, 0.85);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 0.78rem;
+}
+.camera-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin: -0.35rem 0 0.65rem;
+  font-family: var(--mono);
+}
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
+}
+.brightness-chip.ok { color: var(--linked); border-color: rgba(74, 222, 128, 0.35); }
+.brightness-chip.warn { color: var(--focus); border-color: rgba(251, 191, 36, 0.45); }
+
 .stage-wrap {
   position: relative;
   border-radius: var(--radius-md);
   overflow: hidden;
   aspect-ratio: 16/9;
-  background: #000;
+  background: #0a0c14;
   border: 1px solid rgba(255,255,255,0.06);
 }
+#webcam {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+  z-index: 1;
+  background: #000;
+}
 #stageCanvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   display: block;
   cursor: crosshair;
-}
-.stage-vignette {
-  position: absolute;
-  inset: 0;
+  z-index: 2;
   pointer-events: none;
-  box-shadow: inset 0 0 80px rgba(4, 5, 10, 0.5);
-  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .bind-prompt {
@@ -425,13 +474,12 @@ body {
   background: rgba(74, 222, 128, 0.2); color: var(--linked); font-weight: 600; cursor: pointer; font-size: 0.72rem;
 }
 
-.stage-wrap { position: relative; }
 .camera-status {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   max-width: 85%; padding: 0.75rem 1rem; border-radius: var(--radius-sm);
   background: rgba(8, 10, 18, 0.88); border: 1px solid rgba(251, 191, 36, 0.45);
   color: #fbbf24; font-size: 0.78rem; line-height: 1.45; text-align: center;
-  pointer-events: none; z-index: 3; display: none;
+  pointer-events: none; z-index: 4; display: none;
 }
 .camera-status.show { display: block; }
 .camera-status.ok { display: none; }
