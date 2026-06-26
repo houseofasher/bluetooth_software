@@ -204,19 +204,41 @@ class FusionEngine:
             ),
         )
 
-    def _associated_devices_for(self, person: PersonDetection, person_count: int) -> list[BleDevice]:
+    def _primary_person_id(self, persons: list[PersonDetection]) -> int | None:
+        if not persons:
+            return None
+        return max(
+            persons,
+            key=lambda p: p.bbox.get("w", 0.0) * p.bbox.get("h", 0.0),
+        ).person_id
+
+    def _single_device_per_kind(self, devices: list[BleDevice]) -> list[BleDevice]:
+        selected: list[BleDevice] = []
+        by_kind: dict[str, BleDevice] = {}
+        for dev in devices:
+            kind = "phone" if dev.is_phone or dev.device_type == "phone" else dev.device_type
+            if kind not in ("phone", "audio", "watch"):
+                continue
+            if kind not in by_kind:
+                by_kind[kind] = dev
+        for kind in ("phone", "audio", "watch"):
+            if kind in by_kind:
+                selected.append(by_kind[kind])
+        return selected
+
+    def _associated_devices_for(self, person: PersonDetection, primary_person_id: int | None) -> list[BleDevice]:
         """Devices that should be displayed on this person without manual clicks."""
         devices: list[BleDevice] = []
         manual_addr = self.bindings.get(person.person_id)
         if manual_addr and manual_addr in self.devices:
             devices.append(self.devices[manual_addr])
 
-        # If there is only one visible person, attach the user's phone/headphones
-        # automatically. With multiple people, keep correlation/manual binding to
-        # avoid assigning everyone's devices to the wrong body.
-        if person_count == 1:
+        # Attach phone/headphones to the primary visible body. This makes the
+        # single-user demo automatic, and still avoids assigning the same devices
+        # to every duplicate/secondary person track.
+        if person.person_id == primary_person_id:
             seen = {d.address for d in devices}
-            for dev in self._auto_attach_candidates():
+            for dev in self._single_device_per_kind(self._auto_attach_candidates()):
                 if dev.address in seen:
                     continue
                 devices.append(dev)
@@ -271,11 +293,12 @@ class FusionEngine:
     def update(self, persons: list[PersonDetection]) -> list[TrackedTarget]:
         self._try_auto_bind(persons)
         targets: list[TrackedTarget] = []
+        primary_person_id = self._primary_person_id(persons)
 
         for person in persons:
             linked_devices = [
                 self._device_with_placement(person, dev)
-                for dev in self._associated_devices_for(person, len(persons))
+                for dev in self._associated_devices_for(person, primary_person_id)
             ]
             primary = linked_devices[0] if linked_devices else None
             addr = primary.get("address") if primary else None
@@ -344,8 +367,8 @@ class FusionEngine:
     def unbound_devices(self, persons: list[PersonDetection] | None = None) -> list[dict]:
         bound = set(self.bindings.values())
         auto_attached = set()
-        if persons and len(persons) == 1:
-            auto_attached = {d.address for d in self._auto_attach_candidates()}
+        if persons:
+            auto_attached = {d.address for d in self._single_device_per_kind(self._auto_attach_candidates())}
         now = time.time()
         primary = persons[0] if persons else None
         result = []

@@ -327,6 +327,45 @@ function roundRect(c, x, y, w, h, r) {
 function drawDeviceBadge(device, placement, rect, index = 0) {
   const anchor = toCanvas(placement.anchor, rect);
   const ax = anchor.x, ay = anchor.y;
+  ctx.save();
+
+  const isPhone = device.is_phone || device.device_type === "phone";
+  const isAudio = device.device_type === "audio";
+  const markerW = isPhone ? 22 : isAudio ? 28 : 20;
+  const markerH = isPhone ? 36 : isAudio ? 22 : 20;
+  const mx = ax - markerW / 2;
+  const my = ay - markerH / 2;
+
+  ctx.shadowColor = isPhone ? "#4ade80" : "#a78bfa";
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = isPhone ? "rgba(74,222,128,0.16)" : "rgba(167,139,250,0.16)";
+  ctx.strokeStyle = isPhone ? "rgba(74,222,128,0.95)" : "rgba(167,139,250,0.95)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
+  if (isPhone) {
+    roundRect(ctx, mx, my, markerW, markerH, 5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(ax, my + markerH - 4, 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(240,244,252,0.9)";
+    ctx.fill();
+  } else if (isAudio) {
+    ctx.beginPath();
+    ctx.arc(ax, ay, markerW / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(ax - 8, ay + 2, 4, 0, Math.PI * 2);
+    ctx.arc(ax + 8, ay + 2, 4, 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(ax, ay, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
 
   // Pin line from anchor to label
   const labelLines = [
@@ -370,9 +409,13 @@ function drawDeviceBadge(device, placement, rect, index = 0) {
   ctx.fillStyle = "#22d3ee";
   ctx.font = "500 10px Instrument Sans, Segoe UI, sans-serif";
   ctx.fillText(labelLines[1], lx + 8, ly + 28);
+  ctx.restore();
 }
 
-requestAnimationFrame(renderFrame);
+if (!window.__poseSenseRenderStarted) {
+  window.__poseSenseRenderStarted = true;
+  requestAnimationFrame(renderFrame);
+}
 
 canvas.addEventListener("click", (e) => {
   if (!latestData?.targets) return;

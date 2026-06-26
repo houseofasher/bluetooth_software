@@ -101,6 +101,55 @@ def _lm_to_dict(lm, vis=None) -> dict:
     }
 
 
+def _pose_bbox(pose: list[dict]) -> dict:
+    pts = [p for p in pose if p.get("confidence", 0) > 0.35]
+    if not pts:
+        return {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0}
+    xs = [p["x"] for p in pts]
+    ys = [p["y"] for p in pts]
+    x1, y1 = max(0.0, min(xs)), max(0.0, min(ys))
+    x2, y2 = min(1.0, max(xs)), min(1.0, max(ys))
+    return {"x": x1, "y": y1, "w": max(0.0, x2 - x1), "h": max(0.0, y2 - y1)}
+
+
+def _bbox_iou(a: dict, b: dict) -> float:
+    ax2, ay2 = a["x"] + a["w"], a["y"] + a["h"]
+    bx2, by2 = b["x"] + b["w"], b["y"] + b["h"]
+    ix1, iy1 = max(a["x"], b["x"]), max(a["y"], b["y"])
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    union = a["w"] * a["h"] + b["w"] * b["h"] - inter
+    return inter / union if union > 1e-6 else 0.0
+
+
+def _pose_score(pose: list[dict]) -> float:
+    visible = [p.get("confidence", 0.0) for p in pose if p.get("confidence", 0.0) > 0.35]
+    return sum(visible) / max(len(visible), 1) + len(visible) * 0.02
+
+
+def _dedupe_pose_indices(raw_poses: list[list[dict]]) -> list[int]:
+    """Remove duplicate MediaPipe pose detections for the same visible person."""
+    scored = sorted(
+        ((idx, _pose_bbox(pose), _pose_score(pose)) for idx, pose in enumerate(raw_poses)),
+        key=lambda item: (item[2], item[1]["w"] * item[1]["h"]),
+        reverse=True,
+    )
+    kept: list[tuple[int, dict]] = []
+    for idx, bbox, _score in scored:
+        cx, cy = bbox["x"] + bbox["w"] / 2, bbox["y"] + bbox["h"] / 2
+        duplicate = False
+        for _kept_idx, kept_bbox in kept:
+            kcx, kcy = kept_bbox["x"] + kept_bbox["w"] / 2, kept_bbox["y"] + kept_bbox["h"] / 2
+            center_dist = math.hypot(cx - kcx, cy - kcy)
+            if _bbox_iou(bbox, kept_bbox) > 0.35 or center_dist < 0.12:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append((idx, bbox))
+    return sorted(idx for idx, _bbox in kept)
+
+
 class CameraTracker:
     def __init__(self, camera_index: int = 0, max_poses: int = 4) -> None:
         self.camera_index = camera_index
@@ -355,6 +404,11 @@ class CameraTracker:
                     raw_poses.append([_lm_to_dict(lm, lm.visibility) for lm in plm])
                     if pose_res.pose_world_landmarks and i < len(pose_res.pose_world_landmarks):
                         world_poses.append(pose_res.pose_world_landmarks[i])
+
+            if len(raw_poses) > 1:
+                keep = _dedupe_pose_indices(raw_poses)
+                raw_poses = [raw_poses[i] for i in keep]
+                world_poses = [world_poses[i] for i in keep if i < len(world_poses)]
 
             faces: list[list[dict]] = []
             if face_res.face_landmarks:
