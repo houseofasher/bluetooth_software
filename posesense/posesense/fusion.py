@@ -364,6 +364,60 @@ class FusionEngine:
             "placement_hint": placement,
         }
 
+    def radio_targets(self, persons: list[PersonDetection] | None = None) -> list[dict]:
+        """Bluetooth-detected devices to render on the camera stage.
+
+        This is not optical phone/headphone detection. It exposes devices known
+        from live BLE advertisements or Windows pairing so the UI can show them
+        on the camera view even when no body pose is available.
+        """
+        now = time.time()
+        candidates = [
+            d for d in self.devices.values()
+            if (
+                (d.is_live_signal and now - d.last_seen < 20 and d.rssi > -98)
+                or (d.device_type in ("phone", "audio", "watch") and now - d.last_seen < 30)
+            )
+        ]
+        selected = sorted(
+            candidates,
+            key=lambda d: (
+                -int(d.is_live_signal),
+                -int(d.is_phone),
+                -int(d.device_type == "audio"),
+                -d.type_confidence,
+                -d.rssi,
+            ),
+        )[:8]
+        attached = set()
+        primary_person_id = self._primary_person_id(persons or [])
+        for person in persons or []:
+            for dev in self._associated_devices_for(person, primary_person_id):
+                attached.add(dev.address)
+
+        targets = []
+        for idx, dev in enumerate(selected):
+            kind_x = {"phone": 0.32, "audio": 0.68, "watch": 0.5}.get(dev.device_type, 0.22 + (idx % 4) * 0.18)
+            kind_y = {"phone": 0.70, "audio": 0.30, "watch": 0.58}.get(dev.device_type, 0.18 + int(idx / 4) * 0.16)
+            # Add a tiny deterministic offset so multiple devices do not stack.
+            suffix = dev.address.replace(":", "")[-2:]
+            offset = (int(suffix, 16) % 9 - 4) * 0.012 if suffix else 0.0
+            targets.append({
+                **self._device_payload(dev),
+                "id": f"bt-{dev.address}",
+                "x": max(0.08, min(0.92, kind_x + offset)),
+                "y": max(0.12, min(0.88, kind_y + idx * 0.04)),
+                "attached_to_body": dev.address in attached,
+                "label": dev.display_name,
+                "confidence": dev.type_confidence,
+                "position_note": (
+                    "Live BLE advertisement detected." if dev.is_live_signal else
+                    "Windows paired fallback. Position is a radio proxy; consumer laptop Bluetooth "
+                    "does not expose reflection imaging."
+                ),
+            })
+        return targets
+
     def unbound_devices(self, persons: list[PersonDetection] | None = None) -> list[dict]:
         bound = set(self.bindings.values())
         auto_attached = set()

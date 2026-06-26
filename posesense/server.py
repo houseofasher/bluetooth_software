@@ -175,12 +175,15 @@ async def broadcast_loop(ble_mode: str) -> None:
                 {"name": n, "edges": e, "color": c} for n, e, c in POSE_EDGE_GROUPS
             ],
             "hand_edges": HAND_CONNECTIONS,
+            "bluetooth_radio_targets": fusion.radio_targets(persons),
             "unbound_devices": unbound,
             "bindings": fusion.bound_summary(),
             "person_count": camera_count,
             "device_count": len(fusion.devices),
             "disclaimer": (
                 "Camera = line-of-sight pose. Bluetooth = device identity from radio advertisements. "
+                "Bluetooth on a normal laptop does not expose bounce/CSI imaging, so Bluetooth device "
+                "positions are radio proxies, not optical object recognition. "
                 "WiFi CSI = body reflections from router signal perturbations — can detect motion through "
                 "walls when camera cannot see. Smart-home triggers simulate lights/climate on WiFi presence."
             ),

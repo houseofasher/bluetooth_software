@@ -87,6 +87,53 @@ function drawThroughWallGhosts(rect, wifi) {
   }
 }
 
+function drawBluetoothRadioTargets(rect, targets) {
+  if (!targets?.length) return;
+
+  for (const target of targets) {
+    if (target.attached_to_body) continue;
+    const x = rect.ox + (target.x ?? 0.5) * rect.dw;
+    const y = rect.oy + (target.y ?? 0.5) * rect.dh;
+    const isLive = target.is_live_signal !== false;
+    const isPhone = target.is_phone || target.device_type === "phone";
+    const isAudio = target.device_type === "audio";
+    const color = isLive ? (isPhone ? "#4ade80" : isAudio ? "#a78bfa" : "#22d3ee") : "#fbbf24";
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 350);
+    const r = 18 + pulse * 8;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = isLive ? "rgba(34,211,238,0.08)" : "rgba(251,191,36,0.08)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash(isLive ? [] : [5, 4]);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.font = "600 11px Instrument Sans, Segoe UI, sans-serif";
+    const label = `${target.icon || "📡"} ${target.display_name || target.label || "Bluetooth device"}`;
+    const sub = isLive ? `${target.rssi} dBm live` : "paired fallback";
+    const tw = Math.max(ctx.measureText(label).width, ctx.measureText(sub).width);
+    const lx = Math.min(rect.ox + rect.dw - tw - 24, Math.max(rect.ox + 8, x - tw / 2 - 10));
+    const ly = Math.min(rect.oy + rect.dh - 42, Math.max(rect.oy + 8, y + r + 8));
+
+    ctx.fillStyle = "rgba(15, 18, 32, 0.94)";
+    roundRect(ctx, lx, ly, tw + 20, 34, 8);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = "#f0f4fc";
+    ctx.fillText(label, lx + 10, ly + 14);
+    ctx.fillStyle = color;
+    ctx.font = "500 10px Instrument Sans, Segoe UI, sans-serif";
+    ctx.fillText(sub, lx + 10, ly + 27);
+    ctx.restore();
+  }
+}
+
 function drawWifiSpectrogram(wifi) {
   if (!wifiSpecCtx || !wifi?.spectrogram?.length) return;
   const w = wifiSpectrogram.width;
@@ -310,6 +357,7 @@ function renderFrame() {
     if (latestData?.wifi?.through_wall && latestData?.wall_mode) {
       drawThroughWallGhosts(rect, latestData.wifi);
     }
+    drawBluetoothRadioTargets(rect, latestData?.bluetooth_radio_targets || []);
   }
   requestAnimationFrame(renderFrame);
 }
@@ -546,8 +594,8 @@ function renderUI() {
   deviceList.innerHTML = "";
   if (!data.unbound_devices.length) {
     deviceList.innerHTML = `<li style="cursor:default;opacity:0.7">
-      No phone/headphones yet. Open the phone's Bluetooth screen or put headphones in pairing mode.
-      Windows paired devices appear here even without live RSSI.
+      No Bluetooth advertisements yet. Nearby unpaired devices appear automatically when they broadcast BLE.
+      If your phone/headphones are silent, open Bluetooth settings or pairing mode.
     </li>`;
   }
   data.unbound_devices.forEach(d => {
